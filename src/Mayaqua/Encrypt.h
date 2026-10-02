@@ -129,7 +129,7 @@
 // Macro
 #define	HASHED_DATA(p)			(((UCHAR *)p) + 15)
 
-#if OPENSSL_VERSION_NUMBER >= 0x10100000L && !defined(LIBRESSL_VERSION_NUMBER)
+#if (OPENSSL_VERSION_NUMBER >= 0x10100000L && !defined(LIBRESSL_VERSION_NUMBER)) || LIBRESSL_VERSION_NUMBER >= 0x3080100L
 typedef struct PKCS12_st PKCS12;
 typedef struct evp_md_st EVP_MD;
 #else

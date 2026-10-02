@@ -9265,12 +9265,12 @@ bool Win32GetDnsSuffix(char *domain, UINT size)
 
 	info_size = 0;
 	info = ZeroMalloc(sizeof(IP_ADAPTER_ADDRESSES_XP));
-	if (GetAdaptersAddresses(AF_INET, 0, NULL, info, &info_size) == ERROR_BUFFER_OVERFLOW)
+	if (GetAdaptersAddresses(AF_INET, 0, NULL, (PIP_ADAPTER_ADDRESSES)info, &info_size) == ERROR_BUFFER_OVERFLOW)
 	{
 		Free(info);
 		info = ZeroMalloc(info_size);
 	}
-	if (GetAdaptersAddresses(AF_INET, 0, NULL, info, &info_size) != NO_ERROR)
+	if (GetAdaptersAddresses(AF_INET, 0, NULL, (PIP_ADAPTER_ADDRESSES)info, &info_size) != NO_ERROR)
 	{
 		Free(info);
 		return false;
@@ -11852,7 +11852,7 @@ bool StartSSLEx3(SOCK *sock, X *x, K *priv, LIST *chain, UINT ssl_timeout, char 
 			}
 		}
 
-#if OPENSSL_VERSION_NUMBER >= 0x10100000L && !defined(LIBRESSL_VERSION_NUMBER)
+#if (OPENSSL_VERSION_NUMBER >= 0x10100000L && !defined(LIBRESSL_VERSION_NUMBER)) ||  LIBRESSL_VERSION_NUMBER >= 0x3060000L
 		if (sock->SslAcceptSettings.Override_Security_Level)
 		{
 			SSL_CTX_set_security_level(ssl_ctx, sock->SslAcceptSettings.Override_Security_Level_Value);
@@ -16262,7 +16262,7 @@ UINT GetOSSecurityLevel()
 	}
 
 
-#if OPENSSL_VERSION_NUMBER >= 0x10100000L && !defined(LIBRESSL_VERSION_NUMBER)
+#if (OPENSSL_VERSION_NUMBER >= 0x10100000L && !defined(LIBRESSL_VERSION_NUMBER)) || LIBRESSL_VERSION_NUMBER >= 0x3060000L
 	security_level_new = SSL_CTX_get_security_level(ctx);
 #endif
 
@@ -16346,7 +16346,7 @@ TOKEN_LIST *GetCipherList()
 		return ciphers;
 	}
 
-#if OPENSSL_VERSION_NUMBER >= 0x10100000L && !defined(LIBRESSL_VERSION_NUMBER)
+#if (OPENSSL_VERSION_NUMBER >= 0x10100000L && !defined(LIBRESSL_VERSION_NUMBER)) || LIBRESSL_VERSION_NUMBER >= 0x2090100L
 	sk = SSL_get1_supported_ciphers(ssl);
 #else
 	sk = SSL_get_ciphers(ssl);

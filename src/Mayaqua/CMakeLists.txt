@@ -18,7 +18,7 @@ set_target_properties(mayaqua
 
 find_package(OpenSSL REQUIRED)
 
-if(OPENSSL_VERSION VERSION_GREATER_EQUAL "3")
+if(OPENSSL_VERSION VERSION_GREATER_EQUAL "3.0.0" AND OPENSSL_VERSION VERSION_LESS "4.0.0")
   set(OQS_ENABLE ON CACHE BOOL "By setting this to OFF, Open Quantum Safe algorithms will not be built in")
 else()
   # Disable oqsprovider when OpenSSL version < 3
@@ -140,7 +140,7 @@ if(UNIX)
   elseif(${CMAKE_SYSTEM_NAME} STREQUAL "FreeBSD" AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(amd64|i386)")
     message("cpu_features is not available on FreeBSD/${CMAKE_SYSTEM_PROCESSOR}")
     add_definitions(-DSKIP_CPU_FEATURES)
-  elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Darwin" AND NOT CMAKE_SYSTEM_NAME MATCHES "^(arm64|x86_64)")
+  elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Darwin" AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|x86_64)")
     # macOS runs only on Intel or ARM architecrues, should not reach here
     add_definitions(-DSKIP_CPU_FEATURES)
   elseif(${CMAKE_SYSTEM_NAME} STREQUAL "SunOS" OR ${CMAKE_SYSTEM_NAME} STREQUAL "OpenBSD")
