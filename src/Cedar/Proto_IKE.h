@@ -15,6 +15,7 @@
 // State
 #define	IKE_SA_MAIN_MODE					0	// Main mode
 #define	IKE_SA_AGGRESSIVE_MODE				1	// Aggressive mode
+#define	IKEV2_SA_MODE_NONE					2	// IKEv2
 
 #define	IKE_SA_MM_STATE_1_SA				0	// Main mode state 1 (SA exchange is complete. Wait for key exchange)
 #define	IKE_SA_MM_STATE_2_KEY				1	// Main mode state 2 (Key exchange is complete. Wait for exchange ID)
@@ -23,8 +24,22 @@
 #define	IKE_SA_AM_STATE_1_SA				0	// Aggressive mode state 1 (SA exchange is completed. Wait for hash)
 #define	IKE_SA_AM_STATE_2_ESTABLISHED		1	// Aggressive mode state 2 (Hash exchange is completed. Established)
 
+// IKEv2 SA state (responder side)
+#define	IKEV2_STATE_SA_INIT_SENT			0	// IKE_SA_INIT response sent. Wait for the IKE_AUTH request
+#define	IKEV2_STATE_IKE_AUTH_EAP			1	// IKE_AUTH in progress: EAP exchange running
+#define	IKEV2_STATE_ESTABLISHED				2	// IKE SA and the first Child SA are established
+
 #define	IKE_SA_RESEND_INTERVAL				(2 * 1000)	// IKE SA packet retransmission interval
 #define	IKE_SA_RAND_SIZE					16	// Size of the random number
+
+// IKEv2 random number size (RFC 7296: 16 to 256 octets, 32 recommended)
+#define	IKEV2_NONCE_SIZE					32
+
+// IKEv2 PSK authentication pad string (RFC 7296 section 2.15)
+#define	IKEV2_KEY_PAD_STRING				"Key Pad for IKEv2"
+
+// IKEv2 default Child SA lifetime
+#define	IKEV2_CHILD_LIFETIME_DEFAULT		3600	// Seconds
 
 // ESP
 #define	IKE_ESP_HASH_SIZE					12	// The hash size for the ESP packet
@@ -77,6 +92,9 @@ struct IKE_SA_TRANSFORM_SETTING
 	UINT DhId;
 	UINT LifeKilobytes;
 	UINT LifeSeconds;
+	IKE_HASH *V2Prf;							// IKEv2: negotiated PRF algorithm
+	UINT V2IntegId;								// IKEv2: negotiated integrity algorithm ID (IKEV2_AUTH_*)
+	UINT V2IntegIcvSize;						// IKEv2: ICV size in bytes of the integrity algorithm
 };
 
 // IPsec SA transforms data
@@ -207,6 +225,27 @@ struct IKE_SA
 	bool Deleting;								// Deleting
 	UINT NumResends;							// The number of retransmissions
 	char Secret[MAX_SIZE];						// Secret value of the authentication is successful
+	uint8_t MajorVersion; // IKE version
+
+	// IKEv2 state (responder side, valid when MajorVersion == 2)
+	UINT V2State;								// IKEV2_STATE_*
+	UINT V2MsgIdRecvExpected;					// Message ID of the next request expected from the initiator
+	UINT V2MsgIdSendNext;						// Message ID to use for the next server-initiated request
+	bool V2NatDetected;							// Whether NAT was detected during IKE_SA_INIT
+	bool V2UseTransportMode;					// Whether the Child SA is negotiated as transport mode
+	UCHAR V2SkD[IKE_MAX_HASH_SIZE];				// SK_d
+	UCHAR V2SkAi[IKE_MAX_HASH_SIZE];			// SK_ai (integrity: initiator -> responder)
+	UCHAR V2SkAr[IKE_MAX_HASH_SIZE];			// SK_ar (integrity: responder -> initiator)
+	UCHAR V2SkEi[IKE_MAX_KEY_SIZE];				// SK_ei (encryption: initiator -> responder)
+	UCHAR V2SkEr[IKE_MAX_KEY_SIZE];				// SK_er (encryption: responder -> initiator)
+	UCHAR V2SkPi[IKE_MAX_HASH_SIZE];			// SK_pi
+	UCHAR V2SkPr[IKE_MAX_HASH_SIZE];			// SK_pr
+	IKE_CRYPTO_KEY *V2KeyEi;					// Encryption key derived from SK_ei
+	IKE_CRYPTO_KEY *V2KeyEr;					// Encryption key derived from SK_er
+	BUF *V2SaInitRequestData;					// Raw IKE_SA_INIT request bytes (for AUTH calculation)
+	BUF *V2SaInitResponseData;					// Raw IKE_SA_INIT response bytes (for AUTH calculation)
+	BUF *V2IdiBody;								// Raw IDi payload body (for AUTH calculation)
+	UCHAR V2IdiType;							// IDi type
 };
 
 // IPsec SA
@@ -296,7 +335,7 @@ UINT GetNumberOfIkeSaOfIkeClient(IKE_SERVER *ike, IKE_CLIENT *c);
 int CmpIkeClient(void *p1, void *p2);
 int CmpIkeSa(void *p1, void *p2);
 int CmpIPsecSa(void *p1, void *p2);
-IKE_SA *FindIkeSaByEndPointAndInitiatorCookie(IKE_SERVER *ike, IP *client_ip, UINT client_port, IP *server_ip, UINT server_port, UINT64 init_cookie, UINT mode);
+IKE_SA *FindIkeSaByEndPointAndInitiatorCookie(IKE_SERVER *ike, IP *client_ip, UINT client_port, IP *server_ip, UINT server_port, UINT64 init_cookie, uint8_t major_version, UINT mode);
 IKE_SA *FindIkeSaByResponderCookie(IKE_SERVER *ike, UINT64 responder_cookie);
 IKE_SA *FindIkeSaByResponderCookieAndClient(IKE_SERVER *ike, UINT64 responder_cookie, IKE_CLIENT *c);
 IKE_CLIENT *NewIkeClient(IKE_SERVER *ike, IP *client_ip, UINT client_port, IP *server_ip, UINT server_port);

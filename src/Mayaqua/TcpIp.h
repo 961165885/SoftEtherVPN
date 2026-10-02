@@ -638,7 +638,15 @@ struct IKE_HEADER
 	UINT64 InitiatorCookie;						// Initiator cookie
 	UINT64 ResponderCookie;						// Responder cookie
 	UCHAR NextPayload;							// Next payload
-	UCHAR Version;								// Version
+
+#ifdef IS_BIG_ENDIAN
+	uint8_t MajorVersion : 4;  // Major Version
+	uint8_t MinorVersion : 4;  // Minor Version
+#else
+	uint8_t MinorVersion : 4;
+	uint8_t MajorVersion : 4;
+#endif // IS_BIG_ENDIAN
+
 	UCHAR ExchangeType;							// Exchange type
 	UCHAR Flag;									// Flag
 	UINT MessageId;								// Message ID
@@ -650,6 +658,24 @@ struct IKE_HEADER
 #define IKE_EXCHANGE_TYPE_AGGRESSIVE		4	// Aggressive mode
 #define IKE_EXCHANGE_TYPE_INFORMATION		5	// Information exchange
 #define IKE_EXCHANGE_TYPE_QUICK				32	// Quick mode
+
+// IKEV2 exchange type
+#define IKE_EXCHANGE_TYPE_IKE_SA_INIT 34
+#define IKE_EXCHANGE_TYPE_IKE_AUTH 35
+#define IKE_EXCHANGE_TYPE_CREATE_CHILD_SA 36
+#define IKE_EXCHANGE_TYPE_INFORMATIONAL 37
+#define IKE_EXCHANGE_TYPE_IKE_SESSION_RESUME 38
+#define IKE_EXCHANGE_TYPE_GSA_AUTH 39
+#define IKE_EXCHANGE_TYPE_GSA_REGISTRATION 40
+#define IKE_EXCHANGE_TYPE_GSA_REKEY 41
+#define IKE_EXCHANGE_TYPE_Unassigned 42
+#define IKE_EXCHANGE_TYPE_IKE_INTERMEDIATE 43
+#define IKE_EXCHANGE_TYPE_IKE_FOLLOWUP_KE 44
+
+// IKEV2 header flags (RFC 7296 section 3.1)
+#define	IKE_HEADER_V2_FLAG_INITIATOR	0x08	// Sender is the original initiator
+#define	IKE_HEADER_V2_FLAG_VERSION		0x10	// Higher minor version supported
+#define	IKE_HEADER_V2_FLAG_RESPONSE		0x20	// Message is a response
 
 // DHCPv4 data
 struct DHCPV4_DATA

@@ -6,6 +6,7 @@
 // IKE (ISAKMP) and ESP protocol stack
 
 #include "Proto_IKE.h"
+#include "Proto_IKEv2.h"
 
 #include "Cedar.h"
 #include "Connection.h"
@@ -41,6 +42,16 @@ void ProcIKEPacketRecv(IKE_SERVER *ike, UDPPACKET *p)
 		header = ParseIKEPacketHeader(p);
 		if (header == NULL)
 		{
+			return;
+		}
+
+		if (header->MajorVersion == IKE_MAJOR_VERSION_2)
+		{
+			// IKEv2 packet
+			ProcIkeV2PacketRecv(ike, p, header);
+
+			IkeFree(header);
+
 			return;
 		}
 
@@ -2724,7 +2735,7 @@ void ProcIkeAggressiveModePacketRecv(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *
 
 			if ((caps.NatTraversalDraftIetf || caps.NatTraversalRfc3947) || (IsUdpPortOpened(ike->IPsec->UdpListener, &p->DstIP, IPSEC_PORT_IPSEC_ESP_RAW)))
 			{
-				sa = FindIkeSaByEndPointAndInitiatorCookie(ike, &p->DstIP, p->DestPort, &p->SrcIP, p->SrcPort, header->InitiatorCookie, IKE_SA_AGGRESSIVE_MODE);
+				sa = FindIkeSaByEndPointAndInitiatorCookie(ike, &p->DstIP, p->DestPort, &p->SrcIP, p->SrcPort, header->InitiatorCookie, 1, IKE_SA_AGGRESSIVE_MODE);
 
 				if (sa == NULL)
 				{
@@ -3088,7 +3099,7 @@ void ProcIkeMainModePacketRecv(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header
 
 			if ((caps.NatTraversalDraftIetf || caps.NatTraversalRfc3947) || (IsUdpPortOpened(ike->IPsec->UdpListener, &p->DstIP, IPSEC_PORT_IPSEC_ESP_RAW)))
 			{
-				sa = FindIkeSaByEndPointAndInitiatorCookie(ike, &p->DstIP, p->DestPort, &p->SrcIP, p->SrcPort, header->InitiatorCookie, IKE_SA_MAIN_MODE);
+				sa = FindIkeSaByEndPointAndInitiatorCookie(ike, &p->DstIP, p->DestPort, &p->SrcIP, p->SrcPort, header->InitiatorCookie, 1, IKE_SA_MAIN_MODE);
 
 				if (sa == NULL)
 				{
@@ -4108,7 +4119,7 @@ IKE_SA *FindIkeSaByResponderCookieAndClient(IKE_SERVER *ike, UINT64 responder_co
 }
 
 // Search an IKE SA from the endpoint and the Initiator Cookie
-IKE_SA *FindIkeSaByEndPointAndInitiatorCookie(IKE_SERVER *ike, IP *client_ip, UINT client_port, IP *server_ip, UINT server_port, UINT64 init_cookie, UINT mode)
+IKE_SA *FindIkeSaByEndPointAndInitiatorCookie(IKE_SERVER *ike, IP *client_ip, UINT client_port, IP *server_ip, UINT server_port, UINT64 init_cookie, uint8_t major_version, UINT mode)
 {
 	UINT i;
 	// Validate arguments
@@ -4129,6 +4140,7 @@ IKE_SA *FindIkeSaByEndPointAndInitiatorCookie(IKE_SERVER *ike, IP *client_ip, UI
 			c->ClientPort == client_port &&
 			c->ServerPort == server_port &&
 			sa->InitiatorCookie == init_cookie &&
+			sa->MajorVersion == major_version &&
 			sa->Mode == mode)
 		{
 			return sa;
@@ -5542,6 +5554,16 @@ void ProcessIKEInterrupts(IKE_SERVER *ike)
 			need_qm_hard = true;
 		}
 
+		if (c->CurrentIkeSa != NULL && c->CurrentIkeSa->MajorVersion == IKE_MAJOR_VERSION_2)
+		{
+			// IKEv2 clients are not managed by the IKEv1 Quick Mode logic:
+			// their Child SAs are negotiated inside the IKE_AUTH exchange
+			// and rekeying is initiated by the client in this phase
+			need_qm = false;
+			need_qm_hard = false;
+			c->StartQuickModeAsSoon = false;
+		}
+
 		if (need_qm)
 		{
 			if (c->StartQuickModeAsSoon || ((c->LastQuickModeStartTick + (UINT64)IKE_QUICKMODE_START_INTERVAL) <= ike->Now))
@@ -5763,6 +5785,13 @@ void FreeIkeSa(IKE_SA *sa)
 
 	IkeFreeKey(sa->CryptoKey);
 
+	// IKEv2 resources
+	IkeFreeKey(sa->V2KeyEi);
+	IkeFreeKey(sa->V2KeyEr);
+	FreeBuf(sa->V2SaInitRequestData);
+	FreeBuf(sa->V2SaInitResponseData);
+	FreeBuf(sa->V2IdiBody);
+
 	Free(sa);
 }
 
@@ -5873,6 +5902,3 @@ IKE_SERVER *NewIKEServer(CEDAR *cedar, IPSEC_SERVER *ipsec)
 
 	return ike;
 }
-
-
-

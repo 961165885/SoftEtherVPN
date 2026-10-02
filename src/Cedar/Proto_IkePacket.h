@@ -30,6 +30,16 @@
 // IKE version
 #define IKE_VERSION						0x10	// 1.0
 
+/**
+ * Major Version of IKEv1 we implement.
+ */
+#define IKE_MAJOR_VERSION_1 1
+
+  /**
+   * Major Version of IKEv2 we implement.
+   */
+#define IKE_MAJOR_VERSION_2 2
+
 // IKE payload type
 #define	IKE_PAYLOAD_NONE				0		// No payload
 #define IKE_PAYLOAD_SA					1		// SA payload
@@ -51,8 +61,26 @@
 #define	IKE_PAYLOAD_NAT_OA_DRAFT		16		// NAT-OA payload draft
 #define	IKE_PAYLOAD_NAT_OA_DRAFT_2		131		// NAT-OA payload draft 2
 
+// IKEV2 payload type
+#define	IKEV2_PAYLOAD_SA 33 // Security Association  
+#define	IKEV2_PAYLOAD_KEY_EXCHANGE 34 // Key Exchange
+#define	IKEV2_PAYLOAD_ID_INITIATOR 35 // Identification - Initiator
+#define	IKEV2_PAYLOAD_ID_RESPONDER 36 // Identification - Responder
+#define	IKEV2_PAYLOAD_CERT 37 // Certificate
+#define	IKEV2_PAYLOAD_CERTREQ 38 // Certificate Request
+#define	IKEV2_PAYLOAD_AUTH 39 // Authentication
+#define	IKEV2_PAYLOAD_NONCE 40 // Nonce
+#define	IKEV2_PAYLOAD_NOTIFY 41 // Notify
+#define	IKEV2_PAYLOAD_DELETE 42 //Delete
+#define	IKEV2_PAYLOAD_VENDOR_ID 43 // Vendor ID
+#define	IKEV2_PAYLOAD_TS_INITIATOR 44 // Traffic Selector - Initiator
+#define	IKEV2_PAYLOAD_TS_RESPONDER 45 // Traffic Selector - Responder
+#define	IKEV2_PAYLOAD_ENCRYPTED 46 // Encrypted and Authenticated
+#define	IKEV2_PAYLOAD_CONFIGURATION 47 // Configuration
+#define	IKEV2_PAYLOAD_EAP 48 // Extensible Authentication
+
 // Macro to check whether the payload type is supported
-#define IKE_IS_SUPPORTED_PAYLOAD_TYPE(i) ((((i) >= IKE_PAYLOAD_SA) && ((i) <= IKE_PAYLOAD_VENDOR_ID)) || ((i) == IKE_PAYLOAD_NAT_D) || ((i) == IKE_PAYLOAD_NAT_OA) || ((i) == IKE_PAYLOAD_NAT_OA_DRAFT) || ((i) == IKE_PAYLOAD_NAT_OA_DRAFT_2) || ((i) == IKE_PAYLOAD_NAT_D_DRAFT))
+#define IKE_IS_SUPPORTED_PAYLOAD_TYPE(i) ((((i) >= IKE_PAYLOAD_SA) && ((i) <= IKE_PAYLOAD_VENDOR_ID)) || (((i) >= IKEV2_PAYLOAD_SA) && ((i) <= IKEV2_PAYLOAD_EAP)) || ((i) == IKE_PAYLOAD_NAT_D) || ((i) == IKE_PAYLOAD_NAT_OA) || ((i) == IKE_PAYLOAD_NAT_OA_DRAFT) || ((i) == IKE_PAYLOAD_NAT_OA_DRAFT_2) || ((i) == IKE_PAYLOAD_NAT_D_DRAFT))
 
 // IKE header flag
 #define IKE_HEADER_FLAG_ENCRYPTED			1	// Encryption
@@ -375,6 +403,166 @@ struct IKE_PACKET_NAT_OA_PAYLOAD
 	IP IpAddress;								// IP address
 };
 
+
+// IKEV2 packet definitions
+
+// IKEv2 SA attribute types (RFC 7296 section 3.3.5)
+#define	IKEV2_SA_ATTR_KEY_LENGTH			14		// Key length (in bits)
+
+// IKEv2 transform types (RFC 7296 section 3.3.2)
+#define	IKEV2_TRANSFORM_TYPE_ENCR			1		// Encryption algorithm
+#define	IKEV2_TRANSFORM_TYPE_PRF			2		// Pseudorandom function
+#define	IKEV2_TRANSFORM_TYPE_INTEG			3		// Integrity algorithm
+#define	IKEV2_TRANSFORM_TYPE_DH				4		// Diffie-Hellman group
+#define	IKEV2_TRANSFORM_TYPE_ESN			5		// Extended sequence numbers
+
+// IKEv2 encryption algorithm IDs (RFC 7296 section 3.3.2 / RFC 8247)
+#define	IKEV2_ENCR_3DES						3
+#define	IKEV2_ENCR_AES_CBC					12
+
+// IKEv2 PRF algorithm IDs
+#define	IKEV2_PRF_HMAC_MD5					1
+#define	IKEV2_PRF_HMAC_SHA1					2
+#define	IKEV2_PRF_HMAC_SHA2_256				5
+
+// IKEv2 integrity algorithm IDs
+#define	IKEV2_AUTH_HMAC_MD5_96				1
+#define	IKEV2_AUTH_HMAC_SHA1_96				2
+#define	IKEV2_AUTH_HMAC_SHA2_256_128		12
+
+// IKEv2 ESN transform IDs
+#define	IKEV2_ESN_NO						0
+#define	IKEV2_ESN_YES						1
+
+// IKEv2 AUTH payload methods (RFC 7296 section 3.8)
+#define	IKEV2_AUTH_METHOD_RSA				1		// RSA digital signature (legacy)
+#define	IKEV2_AUTH_METHOD_PSK				2		// Shared key message integrity code
+#define	IKEV2_AUTH_METHOD_DSIG				14		// Digital signature (RFC 7427)
+
+// IKEv2 notification message types (RFC 7296 section 3.10.1, errors)
+#define	IKEV2_NOTIFY_UNSUPPORTED_CRITICAL_PAYLOAD	1
+#define	IKEV2_NOTIFY_INVALID_IKE_SPI					4
+#define	IKEV2_NOTIFY_INVALID_SYNTAX						7
+#define	IKEV2_NOTIFY_INVALID_MESSAGE_ID					9
+#define	IKEV2_NOTIFY_INVALID_SPI						11
+#define	IKEV2_NOTIFY_NO_PROPOSAL_CHOSEN					14
+#define	IKEV2_NOTIFY_INVALID_KE_PAYLOAD					17
+#define	IKEV2_NOTIFY_AUTHENTICATION_FAILED				24
+#define	IKEV2_NOTIFY_INTERNAL_ADDRESS_FAILURE			36
+#define	IKEV2_NOTIFY_FAILED_CP_REQUIRED					37
+#define	IKEV2_NOTIFY_TS_UNACCEPTABLE						38
+
+// IKEv2 notification message types (status)
+#define	IKEV2_NOTIFY_INITIAL_CONTACT						16384
+#define	IKEV2_NOTIFY_NAT_DETECTION_SOURCE_IP				16388
+#define	IKEV2_NOTIFY_NAT_DETECTION_DESTINATION_IP		16389
+#define	IKEV2_NOTIFY_USE_TRANSPORT_MODE					16391
+#define	IKEV2_NOTIFY_REKEY_SA								16393
+#define	IKEV2_NOTIFY_ESP_TFC_PADDING_NOT_SUPPORTED		16394
+#define	IKEV2_NOTIFY_NON_FIRST_FRAGMENTS_ALSO			16395
+#define	IKEV2_NOTIFY_MOBIKE_SUPPORTED						16396
+#define	IKEV2_NOTIFY_AUTH_LIFETIME						16403
+#define	IKEV2_NOTIFY_EAP_ONLY_AUTHENTICATION				16417
+#define	IKEV2_NOTIFY_SIGNATURE_HASH_ALGORITHMS			16431
+
+// IKEv2 traffic selector types (RFC 7296 section 3.13.1)
+#define	IKEV2_TS_IPV4_ADDR_RANGE							7
+#define	IKEV2_TS_IPV6_ADDR_RANGE							8
+
+// IKEv2 configuration payload types (RFC 7296 section 3.15)
+#define	IKEV2_CP_CFG_REQUEST								1
+#define	IKEV2_CP_CFG_REPLY								2
+
+// IKEv2 configuration attribute types
+#define	IKEV2_CP_ATTR_INTERNAL_IP4_ADDRESS				1
+#define	IKEV2_CP_ATTR_INTERNAL_IP4_NETMASK				2
+#define	IKEV2_CP_ATTR_INTERNAL_IP4_DNS					3
+#define	IKEV2_CP_ATTR_INTERNAL_IP4_SUBNET				13
+
+// IKEv2 certificate encodings: 4 = X.509 Certificate - Signature
+// (shared with the v1 constant IKE_CERT_TYPE_X509)
+
+// EAP constants (RFC 3748)
+#define	IKEV2_EAP_CODE_REQUEST							1
+#define	IKEV2_EAP_CODE_RESPONSE							2
+#define	IKEV2_EAP_CODE_SUCCESS							3
+#define	IKEV2_EAP_CODE_FAILURE							4
+#define	IKEV2_EAP_TYPE_IDENTITY							1
+#define	IKEV2_EAP_TYPE_NAK								3
+#define	IKEV2_EAP_TYPE_MSCHAPV2							26
+
+// IKEv2 SA payload: a list of IKEV2_PROPOSAL entries
+struct IKEV2_PACKET_SA_PAYLOAD
+{
+	LIST *ProposalList;						// List of IKEV2_PROPOSAL
+};
+
+// IKEv2 proposal substructure (RFC 7296 section 3.3.1)
+struct IKEV2_PROPOSAL
+{
+	UCHAR Number;							// Proposal number
+	UCHAR ProtocolId;						// 1 = IKE, 2 = AH, 3 = ESP
+	BUF *Spi;								// SPI (8 bytes for IKE, 4 for ESP)
+	LIST *TransformList;					// List of IKEV2_TRANSFORM
+};
+
+// IKEv2 transform substructure (RFC 7296 section 3.3.2)
+struct IKEV2_TRANSFORM
+{
+	UCHAR TransformType;					// IKEV2_TRANSFORM_TYPE_*
+	USHORT TransformId;					// Algorithm ID, meaning depends on the type
+	LIST *AttributeList;					// List of IKEV2_TRANSFORM_ATTRIBUTE
+};
+
+// IKEv2 transform attribute (RFC 7296 section 3.3.5)
+struct IKEV2_TRANSFORM_ATTRIBUTE
+{
+	bool IsTv;								// True if the attribute is TV-formatted (value fits in 16 bits)
+	UINT Type;								// 15-bit attribute type
+	USHORT Value16;							// Value of a TV attribute
+	BUF *Value;								// Value of a TLV attribute
+};
+
+// IKEv2 traffic selector (RFC 7296 section 3.13.1)
+struct IKEV2_TS
+{
+	UCHAR Type;								// IKEV2_TS_IPV4_ADDR_RANGE or IKEV2_TS_IPV6_ADDR_RANGE
+	UCHAR IpProtocol;						// IP protocol ID (0 = any)
+	UINT StartPort;							// Start port (host order, 0 = any)
+	UINT EndPort;							// End port (host order, 65535 = any)
+	IP StartAddress;						// Start address
+	IP EndAddress;							// End address
+};
+
+// IKEv2 traffic selector payload
+struct IKEV2_PACKET_TS_PAYLOAD
+{
+	LIST *TsList;							// List of IKEV2_TS
+};
+
+// IKEv2 configuration attribute (RFC 7296 section 3.15)
+struct IKEV2_CP_ATTRIBUTE
+{
+	UINT Type;								// IKEV2_CP_ATTR_*
+	BUF *Value;								// Attribute value
+};
+
+// IKEv2 configuration payload
+struct IKEV2_PACKET_CP_PAYLOAD
+{
+	UCHAR Type;								// IKEV2_CP_CFG_*
+	LIST *AttributeList;					// List of IKEV2_CP_ATTRIBUTE
+};
+
+// IKEv2 AUTH payload
+struct IKEV2_PACKET_AUTH_PAYLOAD
+{
+	UCHAR Method;							// IKEV2_AUTH_METHOD_*
+	BUF *AuthData;							// Authentication data
+};
+
+// IKEv2 packet definitions end
+
 // IKE packet payload
 struct IKE_PACKET_PAYLOAD
 {
@@ -388,17 +576,21 @@ struct IKE_PACKET_PAYLOAD
 		IKE_PACKET_PROPOSAL_PAYLOAD Proposal;	// Proposal payload
 		IKE_PACKET_TRANSFORM_PAYLOAD Transform;	// Transform payload
 		IKE_PACKET_DATA_PAYLOAD KeyExchange;	// Key exchange payload
-		IKE_PACKET_ID_PAYLOAD Id;				// ID payload
+		IKE_PACKET_ID_PAYLOAD Id;				// ID payload (also IKEv2 IDi / IDr)
 		IKE_PACKET_CERT_PAYLOAD Cert;			// Certificate payload
 		IKE_PACKET_CERT_REQUEST_PAYLOAD CertRequest;	// Certificate request payload
 		IKE_PACKET_DATA_PAYLOAD Hash;			// Hash payload
 		IKE_PACKET_DATA_PAYLOAD Sign;			// Signature payload
 		IKE_PACKET_DATA_PAYLOAD Rand;			// Random number payload
-		IKE_PACKET_NOTICE_PAYLOAD Notice;		// Notification Payload
-		IKE_PACKET_DELETE_PAYLOAD Delete;		// Deletion payload
+		IKE_PACKET_NOTICE_PAYLOAD Notice;		// Notification Payload (also IKEv2 Notify)
+		IKE_PACKET_DELETE_PAYLOAD Delete;		// Deletion payload (also IKEv2 Delete)
 		IKE_PACKET_DATA_PAYLOAD VendorId;		// Vendor ID payload
 		IKE_PACKET_NAT_OA_PAYLOAD NatOa;		// NAT-OA payload
-		IKE_PACKET_DATA_PAYLOAD GeneralData;	// Generic data payload
+		IKE_PACKET_DATA_PAYLOAD GeneralData;	// Generic data payload (IKEv2 KE / Nonce / VID / EAP / SK)
+		IKEV2_PACKET_SA_PAYLOAD SaV2;			// IKEv2 SA payload
+		IKEV2_PACKET_TS_PAYLOAD TsV2;			// IKEv2 Traffic Selector payload
+		IKEV2_PACKET_CP_PAYLOAD CpV2;			// IKEv2 Configuration payload
+		IKEV2_PACKET_AUTH_PAYLOAD AuthV2;		// IKEv2 AUTH payload
 	} Payload;
 };
 
@@ -407,9 +599,14 @@ struct IKE_PACKET
 	UINT64 InitiatorCookie;						// Initiator cookie
 	UINT64 ResponderCookie;						// Responder cookie
 	UCHAR ExchangeType;							// Exchange type
-	bool FlagEncrypted;							// Encryption flag
-	bool FlagCommit;							// Commit flag
-	bool FlagAuthOnly;							// Flag only authentication
+	uint8_t MajorVersion : 4;
+	uint8_t MinorVersion : 4;
+	bool FlagEncrypted;							// Encryption flag (IKEv1 only)
+	bool FlagCommit;							// Commit flag (IKEv1 only)
+	bool FlagAuthOnly;							// Flag only authentication (IKEv1 only)
+	bool FlagV2Initiator;						// IKEv2: sender is the original IKE SA initiator
+	bool FlagV2Version;							// IKEv2: sender supports a higher minor version
+	bool FlagV2Response;						// IKEv2: this message is a response
 	UINT MessageId;								// Message ID
 	LIST *PayloadList;							// Payload list
 	BUF *DecryptedPayload;						// Decrypted payload
@@ -655,5 +852,69 @@ void IkeCryptoDecrypt(IKE_CRYPTO_KEY *k, void *dst, void *src, UINT size, void *
 DH_CTX *IkeDhNewCtx(IKE_DH *d);
 void IkeDhFreeCtx(DH_CTX *dh);
 
+
+// IKEV2 functions
+
+// Packet construction / parsing (IKEv2)
+IKE_PACKET *IkeV2New(UINT64 init_cookie, UINT64 resp_cookie, UCHAR exchange_type,
+					 UINT msg_id, bool initiator, bool response, LIST *payload_list);
+
+// SA payload
+bool IkeV2ParseSaPayload(IKEV2_PACKET_SA_PAYLOAD *t, BUF *b);
+void IkeV2FreeSaPayload(IKEV2_PACKET_SA_PAYLOAD *t);
+BUF *IkeV2BuildSaPayload(IKEV2_PACKET_SA_PAYLOAD *t);
+IKE_PACKET_PAYLOAD *IkeV2NewSaPayload(LIST *proposal_list);
+IKEV2_PROPOSAL *IkeV2NewProposal(UCHAR number, UCHAR protocol_id, void *spi, UINT spi_size, LIST *transform_list);
+void IkeV2FreeProposal(IKEV2_PROPOSAL *p);
+IKEV2_TRANSFORM *IkeV2NewTransform(UCHAR transform_type, USHORT transform_id);
+IKEV2_TRANSFORM *IkeV2NewTransformTlv(UCHAR transform_type, USHORT transform_id, UINT attr_type, void *attr_value, UINT attr_size);
+void IkeV2FreeTransform(IKEV2_TRANSFORM *t);
+IKEV2_TRANSFORM_ATTRIBUTE *IkeV2NewTransformAttributeTlv(UINT type, void *value, UINT size);
+IKEV2_TRANSFORM_ATTRIBUTE *IkeV2NewTransformAttributeTv(UINT type, USHORT value);
+UINT IkeV2GetTransformId(IKEV2_PROPOSAL *p, UCHAR transform_type, UINT index);
+UINT IkeV2GetTransformIdNum(IKEV2_PROPOSAL *p, UCHAR transform_type);
+USHORT IkeV2GetKeyLengthBit(IKEV2_PROPOSAL *p);
+
+// Notification payload (IKEv2)
+bool IkeV2ParseNotifyPayload(IKE_PACKET_NOTICE_PAYLOAD *t, BUF *b);
+BUF *IkeV2BuildNoticePayload(IKE_PACKET_NOTICE_PAYLOAD *t);
+IKE_PACKET_PAYLOAD *IkeV2NewNotifyPayload(UCHAR protocol_id, USHORT message_type,
+										   void *spi, UINT spi_size,
+										   void *message, UINT message_size);
+IKE_PACKET_PAYLOAD *IkeV2NewNoticeErrorPayload(USHORT message_type, UINT64 init_cookie, UINT64 resp_cookie);
+
+// Delete payload (IKEv2)
+bool IkeV2ParseDeletePayload(IKE_PACKET_DELETE_PAYLOAD *t, BUF *b);
+BUF *IkeV2BuildDeletePayload(IKE_PACKET_DELETE_PAYLOAD *t);
+IKE_PACKET_PAYLOAD *IkeV2NewDeletePayload(UCHAR protocol_id, LIST *spi_list);
+
+// Traffic Selector payload (IKEv2)
+bool IkeV2ParseTsPayload(IKEV2_PACKET_TS_PAYLOAD *t, BUF *b);
+void IkeV2FreeTsPayload(IKEV2_PACKET_TS_PAYLOAD *t);
+BUF *IkeV2BuildTsPayload(IKEV2_PACKET_TS_PAYLOAD *t);
+IKE_PACKET_PAYLOAD *IkeV2NewTsPayload(UCHAR payload_type, LIST *ts_list);
+IKEV2_TS *IkeV2NewTsAny(bool is_ipv6);
+void IkeV2FreeTs(IKEV2_TS *ts);
+
+// Configuration payload (IKEv2)
+bool IkeV2ParseCpPayload(IKEV2_PACKET_CP_PAYLOAD *t, BUF *b);
+void IkeV2FreeCpPayload(IKEV2_PACKET_CP_PAYLOAD *t);
+BUF *IkeV2BuildCpPayload(IKEV2_PACKET_CP_PAYLOAD *t);
+IKE_PACKET_PAYLOAD *IkeV2NewCpPayload(UCHAR type, LIST *attr_list);
+IKEV2_CP_ATTRIBUTE *IkeV2NewCpAttribute(UINT type, void *value, UINT size);
+void IkeV2FreeCpAttribute(IKEV2_CP_ATTRIBUTE *a);
+
+// AUTH payload (IKEv2)
+bool IkeV2ParseAuthPayload(IKEV2_PACKET_AUTH_PAYLOAD *t, BUF *b);
+void IkeV2FreeAuthPayload(IKEV2_PACKET_AUTH_PAYLOAD *t);
+BUF *IkeV2BuildAuthPayload(IKEV2_PACKET_AUTH_PAYLOAD *t);
+IKE_PACKET_PAYLOAD *IkeV2NewAuthPayload(UCHAR method, void *auth_data, UINT auth_size);
+
+// ID payload (IKEv2): reuses IKE_PACKET_ID_PAYLOAD with protocol id and port set to 0
+IKE_PACKET_PAYLOAD *IkeV2NewIdPayload(UCHAR payload_type, UCHAR id_type, void *id_data, UINT id_size);
+
+// Key derivation (RFC 7296 section 2.13)
+void IkeCalcPrfPlus(IKE_HASH *prf, void *key, UINT key_size, void *seed, UINT seed_size, void *dst, UINT dst_size);
+BUF *IkeCalcPrfPlusBuf(IKE_HASH *prf, void *key, UINT key_size, void *seed, UINT seed_size, UINT dst_size);
 
 #endif	// PROTO_IKEPACKET_H

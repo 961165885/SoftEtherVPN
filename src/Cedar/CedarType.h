@@ -536,6 +536,15 @@ typedef struct IKE_CLIENT IKE_CLIENT;
 typedef struct IPSECSA IPSECSA;
 typedef struct IKE_CAPS IKE_CAPS;
 
+typedef struct IKEV2_PACKET_SA_PAYLOAD IKEV2_PACKET_SA_PAYLOAD;
+typedef struct IKEV2_PROPOSAL IKEV2_PROPOSAL;
+typedef struct IKEV2_TRANSFORM IKEV2_TRANSFORM;
+typedef struct IKEV2_TRANSFORM_ATTRIBUTE IKEV2_TRANSFORM_ATTRIBUTE;
+typedef struct IKEV2_TS IKEV2_TS;
+typedef struct IKEV2_PACKET_TS_PAYLOAD IKEV2_PACKET_TS_PAYLOAD;
+typedef struct IKEV2_CP_ATTRIBUTE IKEV2_CP_ATTRIBUTE;
+typedef struct IKEV2_PACKET_CP_PAYLOAD IKEV2_PACKET_CP_PAYLOAD;
+typedef struct IKEV2_PACKET_AUTH_PAYLOAD IKEV2_PACKET_AUTH_PAYLOAD;
 // ==============================================================
 //  IPSec Packet
 // ==============================================================

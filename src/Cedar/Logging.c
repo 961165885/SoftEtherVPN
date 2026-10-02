@@ -1537,10 +1537,11 @@ char *PacketLogParseProc(RECORD *rec)
 
 						{
 							Format(tmp, sizeof(tmp), "InitiatorCookie=%I64u ResponderCookie=%I64u "
-							       "Version=0x%x ExchangeType=0x%x Flag=0x%x MessageId=%u MessageSize=%u",
+							       "Version=0x%x%x ExchangeType=0x%x Flag=0x%x MessageId=%u MessageSize=%u",
 							       Endian64(p->L7.IkeHeader->InitiatorCookie),
 							       Endian64(p->L7.IkeHeader->ResponderCookie),
-							       p->L7.IkeHeader->Version,
+								   p->L7.IkeHeader->MajorVersion,
+								   p->L7.IkeHeader->MinorVersion,
 							       p->L7.IkeHeader->ExchangeType,
 							       p->L7.IkeHeader->Flag,
 							       Endian32(p->L7.IkeHeader->MessageId),
@@ -1816,10 +1817,11 @@ char *PacketLogParseProc(RECORD *rec)
 
 						{
 							Format(tmp, sizeof(tmp), "InitiatorCookie=%I64u ResponderCookie=%I64u "
-							       "Version=0x%x ExchangeType=0x%x Flag=0x%x MessageId=%u MessageSize=%u",
+							       "Version=0x%x%x ExchangeType=0x%x Flag=0x%x MessageId=%u MessageSize=%u",
 							       Endian64(p->L7.IkeHeader->InitiatorCookie),
 							       Endian64(p->L7.IkeHeader->ResponderCookie),
-							       p->L7.IkeHeader->Version,
+								   p->L7.IkeHeader->MajorVersion,
+								   p->L7.IkeHeader->MinorVersion,
 							       p->L7.IkeHeader->ExchangeType,
 							       p->L7.IkeHeader->Flag,
 							       Endian32(p->L7.IkeHeader->MessageId),

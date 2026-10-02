@@ -479,6 +479,36 @@ BUF *IkeBuildPayload(IKE_PACKET_PAYLOAD *p)
 		b = IkeBuildNatOaPayload(&p->Payload.NatOa);
 		break;
 
+	case IKEV2_PAYLOAD_SA:				// SA payload (IKEv2)
+		b = IkeV2BuildSaPayload(&p->Payload.SaV2);
+		break;
+
+	case IKEV2_PAYLOAD_ID_INITIATOR:		// IDi payload (IKEv2)
+	case IKEV2_PAYLOAD_ID_RESPONDER:		// IDr payload (IKEv2)
+		b = IkeBuildIdPayload(&p->Payload.Id);
+		break;
+
+	case IKEV2_PAYLOAD_NOTIFY:			// Notification payload (IKEv2)
+		b = IkeV2BuildNoticePayload(&p->Payload.Notice);
+		break;
+
+	case IKEV2_PAYLOAD_DELETE:			// Deletion payload (IKEv2)
+		b = IkeV2BuildDeletePayload(&p->Payload.Delete);
+		break;
+
+	case IKEV2_PAYLOAD_TS_INITIATOR:		// Traffic selector payload (IKEv2)
+	case IKEV2_PAYLOAD_TS_RESPONDER:
+		b = IkeV2BuildTsPayload(&p->Payload.TsV2);
+		break;
+
+	case IKEV2_PAYLOAD_CONFIGURATION:	// Configuration payload (IKEv2)
+		b = IkeV2BuildCpPayload(&p->Payload.CpV2);
+		break;
+
+	case IKEV2_PAYLOAD_AUTH:			// AUTH payload (IKEv2)
+		b = IkeV2BuildAuthPayload(&p->Payload.AuthV2);
+		break;
+
 	case IKE_PAYLOAD_KEY_EXCHANGE:		// Key exchange payload
 	case IKE_PAYLOAD_HASH:				// Hash payload
 	case IKE_PAYLOAD_SIGN:				// Signature payload
@@ -886,10 +916,12 @@ IKE_PACKET_PAYLOAD *IkeParsePayload(UINT payload_type, BUF *b)
 		break;
 
 	case IKE_PAYLOAD_CERT:				// Certificate payload
+	case IKEV2_PAYLOAD_CERT:
 		ok = IkeParseCertPayload(&p->Payload.Cert, b);
 		break;
 
 	case IKE_PAYLOAD_CERT_REQUEST:		// Certificate request payload
+	case IKEV2_PAYLOAD_CERTREQ:
 		ok = IkeParseCertRequestPayload(&p->Payload.CertRequest, b);
 		break;
 
@@ -906,6 +938,35 @@ IKE_PACKET_PAYLOAD *IkeParsePayload(UINT payload_type, BUF *b)
 	case IKE_PAYLOAD_NAT_OA_DRAFT_2:
 		ok = IkeParseNatOaPayload(&p->Payload.NatOa, b);
 		break;
+	case IKEV2_PAYLOAD_SA:					// SA payload (IKEv2)
+		ok = IkeV2ParseSaPayload(&p->Payload.SaV2, b);
+		break;
+
+	case IKEV2_PAYLOAD_ID_INITIATOR:		// IDi payload (IKEv2)
+	case IKEV2_PAYLOAD_ID_RESPONDER:		// IDr payload (IKEv2)
+		ok = IkeParseIdPayload(&p->Payload.Id, b);
+		break;
+
+	case IKEV2_PAYLOAD_NOTIFY:				// Notification payload (IKEv2)
+		ok = IkeV2ParseNotifyPayload(&p->Payload.Notice, b);
+		break;
+
+	case IKEV2_PAYLOAD_DELETE:				// Deletion payload (IKEv2)
+		ok = IkeV2ParseDeletePayload(&p->Payload.Delete, b);
+		break;
+
+	case IKEV2_PAYLOAD_TS_INITIATOR:		// Traffic selector payload (IKEv2)
+	case IKEV2_PAYLOAD_TS_RESPONDER:
+		ok = IkeV2ParseTsPayload(&p->Payload.TsV2, b);
+		break;
+
+	case IKEV2_PAYLOAD_CONFIGURATION:		// Configuration payload (IKEv2)
+		ok = IkeV2ParseCpPayload(&p->Payload.CpV2, b);
+		break;
+
+	case IKEV2_PAYLOAD_AUTH:				// AUTH payload (IKEv2)
+		ok = IkeV2ParseAuthPayload(&p->Payload.AuthV2, b);
+		break;
 
 	case IKE_PAYLOAD_KEY_EXCHANGE:		// Key exchange payload
 	case IKE_PAYLOAD_HASH:				// Hash payload
@@ -914,6 +975,11 @@ IKE_PACKET_PAYLOAD *IkeParsePayload(UINT payload_type, BUF *b)
 	case IKE_PAYLOAD_VENDOR_ID:			// Vendor ID payload
 	case IKE_PAYLOAD_NAT_D:				// NAT-D payload
 	case IKE_PAYLOAD_NAT_D_DRAFT:		// NAT-D payload (draft)
+	case IKEV2_PAYLOAD_KEY_EXCHANGE:		// Key exchange payload (IKEv2)
+	case IKEV2_PAYLOAD_NONCE:				// Nonce payload (IKEv2)
+	case IKEV2_PAYLOAD_VENDOR_ID:			// Vendor ID payload (IKEv2)
+	case IKEV2_PAYLOAD_ENCRYPTED:			// Encrypted payload (IKEv2)
+	case IKEV2_PAYLOAD_EAP:				// EAP payload (IKEv2)
 	default:
 		ok = IkeParseDataPayload(&p->Payload.GeneralData, b);
 		break;
@@ -1697,6 +1763,36 @@ void IkeFreePayload(IKE_PACKET_PAYLOAD *p)
 		// Do Nothing
 		break;
 
+	case IKEV2_PAYLOAD_SA:				// SA payload (IKEv2)
+		IkeV2FreeSaPayload(&p->Payload.SaV2);
+		break;
+
+	case IKEV2_PAYLOAD_ID_INITIATOR:		// IDi payload (IKEv2)
+	case IKEV2_PAYLOAD_ID_RESPONDER:		// IDr payload (IKEv2)
+		IkeFreeIdPayload(&p->Payload.Id);
+		break;
+
+	case IKEV2_PAYLOAD_NOTIFY:				// Notification payload (IKEv2)
+		IkeFreeNoticePayload(&p->Payload.Notice);
+		break;
+
+	case IKEV2_PAYLOAD_DELETE:				// Deletion payload (IKEv2)
+		IkeFreeDeletePayload(&p->Payload.Delete);
+		break;
+
+	case IKEV2_PAYLOAD_TS_INITIATOR:		// Traffic selector payload (IKEv2)
+	case IKEV2_PAYLOAD_TS_RESPONDER:
+		IkeV2FreeTsPayload(&p->Payload.TsV2);
+		break;
+
+	case IKEV2_PAYLOAD_CONFIGURATION:		// Configuration payload (IKEv2)
+		IkeV2FreeCpPayload(&p->Payload.CpV2);
+		break;
+
+	case IKEV2_PAYLOAD_AUTH:				// AUTH payload (IKEv2)
+		IkeV2FreeAuthPayload(&p->Payload.AuthV2);
+		break;
+
 	case IKE_PAYLOAD_KEY_EXCHANGE:		// Key exchange payload
 	case IKE_PAYLOAD_HASH:				// Hash payload
 	case IKE_PAYLOAD_SIGN:				// Signature payload
@@ -1782,35 +1878,21 @@ LABEL_ERROR:
 		total += payload_size;
 
 		// Analyse the payload body
-		if (IKE_IS_SUPPORTED_PAYLOAD_TYPE(payload_type))
-		{
-			// Supported payload type
-			pay = IkeParsePayload(payload_type, payload_data);
-
-			if (pay == NULL)
-			{
-				FreeBuf(payload_data);
-				Debug("ISAKMP: Broken Packet (Payload Data Parse Failed)\n");
-				goto LABEL_ERROR;
-			}
-
-			Add(o, pay);
-		}
-		else
+		if (!IKE_IS_SUPPORTED_PAYLOAD_TYPE(payload_type))
 		{
 			// Unsupported payload type
 			Debug("ISAKMP: Ignored Payload Type: %u\n", payload_type);
-			pay = IkeParsePayload(payload_type, payload_data);
-
-			if (pay == NULL)
-			{
-				FreeBuf(payload_data);
-				Debug("ISAKMP: Broken Packet (Payload Data Parse Failed)\n");
-				goto LABEL_ERROR;
-			}
-
-			Add(o, pay);
 		}
+		pay = IkeParsePayload(payload_type, payload_data);
+
+		if (pay == NULL)
+		{
+			FreeBuf(payload_data);
+			Debug("ISAKMP: Broken Packet (Payload Data Parse Failed)\n");
+			goto LABEL_ERROR;
+		}
+
+		Add(o, pay);
 
 		payload_type = header.NextPayload;
 
@@ -1872,11 +1954,24 @@ BUF *IkeBuildEx(IKE_PACKET *p, IKE_CRYPTO_PARAM *cparam, bool use_original_decry
 	h.InitiatorCookie = Endian64(p->InitiatorCookie);
 	h.ResponderCookie = Endian64(p->ResponderCookie);
 	h.NextPayload = IkeGetFirstPayloadType(p->PayloadList);
-	h.Version = IKE_VERSION;
 	h.ExchangeType = p->ExchangeType;
-	h.Flag = (p->FlagEncrypted ? IKE_HEADER_FLAG_ENCRYPTED : 0) |
-		(p->FlagCommit ? IKE_HEADER_FLAG_COMMIT : 0) |
-		(p->FlagAuthOnly ? IKE_HEADER_FLAG_AUTH_ONLY : 0);
+
+	if (p->MajorVersion == IKE_MAJOR_VERSION_2)
+	{
+		h.MajorVersion = IKE_MAJOR_VERSION_2;
+		h.MinorVersion = 0;
+		h.Flag = (p->FlagV2Initiator ? IKE_HEADER_V2_FLAG_INITIATOR : 0) |
+			(p->FlagV2Version ? IKE_HEADER_V2_FLAG_VERSION : 0) |
+			(p->FlagV2Response ? IKE_HEADER_V2_FLAG_RESPONSE : 0);
+	}
+	else
+	{
+		h.MajorVersion = IKE_MAJOR_VERSION_1;
+		h.Flag = (p->FlagEncrypted ? IKE_HEADER_FLAG_ENCRYPTED : 0) |
+			(p->FlagCommit ? IKE_HEADER_FLAG_COMMIT : 0) |
+			(p->FlagAuthOnly ? IKE_HEADER_FLAG_AUTH_ONLY : 0);
+	}
+
 	h.MessageId = Endian32(p->MessageId);
 
 	if (p->DecryptedPayload != NULL && use_original_decrypted)
@@ -1953,10 +2048,25 @@ IKE_PACKET *IkeParseEx(void *data, UINT size, IKE_CRYPTO_PARAM *cparam, bool hea
 		p->MessageSize = Endian32(h->MessageSize);
 		p->InitiatorCookie = Endian64(h->InitiatorCookie);
 		p->ResponderCookie = Endian64(h->ResponderCookie);
+		p->MajorVersion = h->MajorVersion;
+		p->MinorVersion = h->MinorVersion;
 		p->ExchangeType = h->ExchangeType;
-		p->FlagEncrypted = (h->Flag & IKE_HEADER_FLAG_ENCRYPTED) ? true : false;
-		p->FlagCommit = (h->Flag & IKE_HEADER_FLAG_COMMIT) ? true : false;
-		p->FlagAuthOnly = (h->Flag & IKE_HEADER_FLAG_AUTH_ONLY) ? true : false;
+
+		if (p->MajorVersion == IKE_MAJOR_VERSION_2)
+		{
+			// In IKEv2 the encryption is expressed by the Encrypted (SK)
+			// payload, not by a header flag
+			p->FlagV2Initiator = (h->Flag & IKE_HEADER_V2_FLAG_INITIATOR) ? true : false;
+			p->FlagV2Version = (h->Flag & IKE_HEADER_V2_FLAG_VERSION) ? true : false;
+			p->FlagV2Response = (h->Flag & IKE_HEADER_V2_FLAG_RESPONSE) ? true : false;
+		}
+		else
+		{
+			p->FlagEncrypted = (h->Flag & IKE_HEADER_FLAG_ENCRYPTED) ? true : false;
+			p->FlagCommit = (h->Flag & IKE_HEADER_FLAG_COMMIT) ? true : false;
+			p->FlagAuthOnly = (h->Flag & IKE_HEADER_FLAG_AUTH_ONLY) ? true : false;
+		}
+
 		p->MessageId = Endian32(h->MessageId);
 
 		if (b->Size < Endian32(h->MessageSize) ||
@@ -2379,6 +2489,8 @@ IKE_ENGINE *NewIkeEngine()
 	e->EspCryptos[IKE_TRANSFORM_ID_P2_ESP_AES] = aes;
 	e->EspHashes[IKE_P2_HMAC_MD5_96] = md5;
 	e->EspHashes[IKE_P2_HMAC_SHA1_96] = sha1;
+	// IKEv2 integrity algorithm for ESP: AUTH_HMAC_SHA2_256_128 (12)
+	e->EspHashes[IKEV2_AUTH_HMAC_SHA2_256_128] = sha2_256;
 
 	// Definition of the DH algorithm
 	e->IkeDhs[IKE_P1_DH_GROUP_768_MODP] = e->EspDhs[IKE_P2_DH_GROUP_768_MODP] = dh1;
@@ -2896,7 +3008,1393 @@ void IkeDhFreeCtx(DH_CTX *dh)
 	DhFree(dh);
 }
 
+// IKEV2 functions
 
+// Internal helper function prototypes (IKEv2)
+void IkeV2FreeTransformList(LIST *o);
+void IkeV2FreeTransformAttribute(IKEV2_TRANSFORM_ATTRIBUTE *a);
+BUF *IkeV2BuildTransformAttributeList(LIST *o);
+BUF *IkeV2BuildTs(IKEV2_TS *ts);
 
+// Read a big-endian 16-bit value
+static USHORT IkeV2ReadU16(UCHAR *p)
+{
+	return (USHORT)(((USHORT)p[0] << 8) | (USHORT)p[1]);
+}
 
+// Write a big-endian 16-bit value
+static void IkeV2WriteU16(UCHAR *p, USHORT v)
+{
+	p[0] = (UCHAR)((v >> 8) & 0xff);
+	p[1] = (UCHAR)(v & 0xff);
+}
 
+// Create a new IKEv2 packet
+IKE_PACKET *IkeV2New(UINT64 init_cookie, UINT64 resp_cookie, UCHAR exchange_type,
+					 UINT msg_id, bool initiator, bool response, LIST *payload_list)
+{
+	IKE_PACKET *p = IkeNew(init_cookie, resp_cookie, exchange_type, false, false, false,
+		msg_id, payload_list);
+
+	if (p == NULL)
+	{
+		return NULL;
+	}
+
+	p->MajorVersion = IKE_MAJOR_VERSION_2;
+	p->FlagV2Initiator = initiator;
+	p->FlagV2Response = response;
+
+	return p;
+}
+
+//// SA payload (IKEv2)
+
+// Parse the IKEv2 SA payload
+bool IkeV2ParseSaPayload(IKEV2_PACKET_SA_PAYLOAD *t, BUF *b)
+{
+	LIST *proposal_list;
+	// Validate arguments
+	if (t == NULL || b == NULL)
+	{
+		return false;
+	}
+
+	proposal_list = NewListFast(NULL);
+
+	while (true)
+	{
+		UCHAR ph[8];
+		UCHAR next_sub, proposal_num, protocol_id, spi_size;
+		UINT num_transforms;
+		USHORT proposal_length;
+		UINT transform_bytes;
+		IKEV2_PROPOSAL *proposal;
+		BUF *spi = NULL;
+		LIST *transform_list;
+		UINT i;
+		bool error = false;
+
+		// Proposal substructure header:
+		//   NextSubstructure(1) Reserved(1) ProposalLength(2)
+		//   ProposalNum(1) ProtocolId(1) SpiSize(1) NumTransforms(1)
+		if (ReadBuf(b, ph, sizeof(ph)) != sizeof(ph))
+		{
+			break;
+		}
+
+		next_sub = ph[0];
+		proposal_length = IkeV2ReadU16(ph + 2);
+		proposal_num = ph[4];
+		protocol_id = ph[5];
+		spi_size = ph[6];
+		num_transforms = ph[7];
+
+		if (proposal_length < sizeof(ph) || spi_size > 16)
+		{
+			break;
+		}
+
+		// Number of bytes occupied by the transforms of this proposal
+		transform_bytes = (UINT)proposal_length - sizeof(ph) - spi_size;
+
+		if (b->Size - b->Current < transform_bytes)
+		{
+			break;
+		}
+
+		if (spi_size > 0)
+		{
+			spi = ReadBufFromBuf(b, spi_size);
+			if (spi == NULL)
+			{
+				error = true;
+			}
+		}
+
+		transform_list = NewListFast(NULL);
+
+		// Transform substructures:
+		//   NextSubstructure(1) Reserved(1) TransformLength(2) TransformType(1)
+		//   Reserved(1) TransformId(2) Attributes...
+		for (i = 0; error == false && i < num_transforms && transform_bytes >= 8; i++)
+		{
+			UCHAR th[8];
+			USHORT transform_length;
+			IKEV2_TRANSFORM *transform;
+			BUF *attr_data;
+			UINT num_attrs, pos;
+
+			if (ReadBuf(b, th, sizeof(th)) != sizeof(th))
+			{
+				error = true;
+				break;
+			}
+
+			transform_length = IkeV2ReadU16(th + 2);
+
+			if (transform_length < sizeof(th) || transform_length > transform_bytes)
+			{
+				error = true;
+				break;
+			}
+
+			attr_data = ReadBufFromBuf(b, transform_length - sizeof(th));
+			if (attr_data == NULL)
+			{
+				error = true;
+				break;
+			}
+
+			transform_bytes -= transform_length;
+
+			transform = ZeroMalloc(sizeof(IKEV2_TRANSFORM));
+			transform->TransformType = th[4];
+			transform->TransformId = IkeV2ReadU16(th + 6);
+			transform->AttributeList = NewListFast(NULL);
+
+			// Attributes: [AF(1bit) | Type(15bits)](2)
+			//   TV form: Value(2)     TLV form: Length(2) Value(...)
+			num_attrs = attr_data->Size;
+			pos = 0;
+			while (num_attrs - pos >= 4)
+			{
+				UCHAR *ap = ((UCHAR *)attr_data->Buf) + pos;
+				USHORT raw = IkeV2ReadU16(ap);
+				bool is_tv = (raw & 0x8000) ? true : false;
+				UINT attr_type = raw & 0x7fff;
+
+				if (is_tv)
+				{
+					Add(transform->AttributeList, IkeV2NewTransformAttributeTv(attr_type, IkeV2ReadU16(ap + 2)));
+					pos += 4;
+				}
+				else
+				{
+					USHORT value_length = IkeV2ReadU16(ap + 2);
+					pos += 4;
+					if (value_length > num_attrs - pos)
+					{
+						break;
+					}
+					Add(transform->AttributeList, IkeV2NewTransformAttributeTlv(attr_type, ap + pos, value_length));
+					pos += value_length;
+				}
+			}
+
+			FreeBuf(attr_data);
+
+			Add(transform_list, transform);
+		}
+
+		if (error == false && transform_bytes > 0)
+		{
+			// Skip any trailing bytes of the proposal not covered by the
+			// transform count to stay aligned with the next substructure
+			BUF *rest = ReadBufFromBuf(b, transform_bytes);
+			if (rest != NULL)
+			{
+				FreeBuf(rest);
+			}
+			else
+			{
+				error = true;
+			}
+		}
+
+		if (error)
+		{
+			if (spi != NULL)
+			{
+				FreeBuf(spi);
+			}
+			IkeV2FreeTransformList(transform_list);
+			break;
+		}
+
+		proposal = ZeroMalloc(sizeof(IKEV2_PROPOSAL));
+		proposal->Number = proposal_num;
+		proposal->ProtocolId = protocol_id;
+		proposal->Spi = spi;
+		proposal->TransformList = transform_list;
+
+		Add(proposal_list, proposal);
+
+		if (next_sub == 0)
+		{
+			// Last proposal
+			break;
+		}
+	}
+
+	if (LIST_NUM(proposal_list) == 0)
+	{
+		ReleaseList(proposal_list);
+		return false;
+	}
+
+	t->ProposalList = proposal_list;
+
+	return true;
+}
+
+// Release a list of IKEv2 transforms
+void IkeV2FreeTransformList(LIST *o)
+{
+	UINT i;
+	// Validate arguments
+	if (o == NULL)
+	{
+		return;
+	}
+
+	for (i = 0; i < LIST_NUM(o); i++)
+	{
+		IKEV2_TRANSFORM *t = LIST_DATA(o, i);
+		IkeV2FreeTransform(t);
+	}
+
+	ReleaseList(o);
+}
+
+// Release the IKEv2 SA payload
+void IkeV2FreeSaPayload(IKEV2_PACKET_SA_PAYLOAD *t)
+{
+	UINT i;
+	// Validate arguments
+	if (t == NULL)
+	{
+		return;
+	}
+
+	if (t->ProposalList != NULL)
+	{
+		for (i = 0; i < LIST_NUM(t->ProposalList); i++)
+		{
+			IKEV2_PROPOSAL *p = LIST_DATA(t->ProposalList, i);
+			IkeV2FreeProposal(p);
+		}
+
+		ReleaseList(t->ProposalList);
+	}
+}
+
+// Release an IKEv2 proposal
+void IkeV2FreeProposal(IKEV2_PROPOSAL *p)
+{
+	// Validate arguments
+	if (p == NULL)
+	{
+		return;
+	}
+
+	if (p->Spi != NULL)
+	{
+		FreeBuf(p->Spi);
+	}
+
+	IkeV2FreeTransformList(p->TransformList);
+
+	Free(p);
+}
+
+// Release an IKEv2 transform
+void IkeV2FreeTransform(IKEV2_TRANSFORM *t)
+{
+	UINT i;
+	// Validate arguments
+	if (t == NULL)
+	{
+		return;
+	}
+
+	if (t->AttributeList != NULL)
+	{
+		for (i = 0; i < LIST_NUM(t->AttributeList); i++)
+		{
+			IKEV2_TRANSFORM_ATTRIBUTE *a = LIST_DATA(t->AttributeList, i);
+			IkeV2FreeTransformAttribute(a);
+		}
+
+		ReleaseList(t->AttributeList);
+	}
+
+	Free(t);
+}
+
+// Release an IKEv2 transform attribute
+void IkeV2FreeTransformAttribute(IKEV2_TRANSFORM_ATTRIBUTE *a)
+{
+	// Validate arguments
+	if (a == NULL)
+	{
+		return;
+	}
+
+	if (a->Value != NULL)
+	{
+		FreeBuf(a->Value);
+	}
+
+	Free(a);
+}
+
+// Build the IKEv2 SA payload
+BUF *IkeV2BuildSaPayload(IKEV2_PACKET_SA_PAYLOAD *t)
+{
+	BUF *b;
+	UINT i;
+	// Validate arguments
+	if (t == NULL)
+	{
+		return NULL;
+	}
+
+	b = NewBuf();
+
+	for (i = 0; i < LIST_NUM(t->ProposalList); i++)
+	{
+		IKEV2_PROPOSAL *p = LIST_DATA(t->ProposalList, i);
+		bool is_last = (i == (LIST_NUM(t->ProposalList) - 1)) ? true : false;
+		BUF *transform_buf = NewBuf();
+		UCHAR ph[8];
+		UINT j;
+
+		// Serialize the transforms first: the proposal length field needs
+		// their total size
+		for (j = 0; j < LIST_NUM(p->TransformList); j++)
+		{
+			IKEV2_TRANSFORM *tr = LIST_DATA(p->TransformList, j);
+			bool tr_is_last = (j == (LIST_NUM(p->TransformList) - 1)) ? true : false;
+			BUF *attr_buf = IkeV2BuildTransformAttributeList(tr->AttributeList);
+			UCHAR th[8];
+
+			Zero(th, sizeof(th));
+			th[0] = tr_is_last ? 0 : 3;	// 0 = last substructure, 3 = another transform follows
+			IkeV2WriteU16(th + 2, (USHORT)(sizeof(th) + (attr_buf != NULL ? attr_buf->Size : 0)));
+			th[4] = tr->TransformType;
+			IkeV2WriteU16(th + 6, tr->TransformId);
+
+			WriteBuf(transform_buf, th, sizeof(th));
+
+			if (attr_buf != NULL)
+			{
+				WriteBufBuf(transform_buf, attr_buf);
+				FreeBuf(attr_buf);
+			}
+		}
+
+		// Proposal substructure header:
+		//   NextSubstructure(1) Reserved(1) ProposalLength(2)
+		//   ProposalNum(1) ProtocolId(1) SpiSize(1) NumTransforms(1)
+		Zero(ph, sizeof(ph));
+		ph[0] = is_last ? 0 : 2;		// 0 = last substructure, 2 = another proposal follows
+		IkeV2WriteU16(ph + 2, (USHORT)(sizeof(ph) + (p->Spi != NULL ? p->Spi->Size : 0) + transform_buf->Size));
+		ph[4] = p->Number;
+		ph[5] = p->ProtocolId;
+		ph[6] = p->Spi != NULL ? (UCHAR)p->Spi->Size : 0;
+		ph[7] = (UCHAR)LIST_NUM(p->TransformList);
+
+		WriteBuf(b, ph, sizeof(ph));
+
+		if (p->Spi != NULL && p->Spi->Size > 0)
+		{
+			WriteBufBuf(b, p->Spi);
+		}
+
+		WriteBufBuf(b, transform_buf);
+
+		FreeBuf(transform_buf);
+	}
+
+	return b;
+}
+
+// Build a list of IKEv2 transform attributes
+BUF *IkeV2BuildTransformAttributeList(LIST *o)
+{
+	BUF *b;
+	UINT i;
+	// Validate arguments
+	if (o == NULL)
+	{
+		return NULL;
+	}
+
+	b = NewBuf();
+
+	for (i = 0; i < LIST_NUM(o); i++)
+	{
+		IKEV2_TRANSFORM_ATTRIBUTE *a = LIST_DATA(o, i);
+		UCHAR ah[4];
+
+		if (a->IsTv)
+		{
+			IkeV2WriteU16(ah, (USHORT)(0x8000 | a->Type));
+			IkeV2WriteU16(ah + 2, a->Value16);
+			WriteBuf(b, ah, sizeof(ah));
+		}
+		else
+		{
+			IkeV2WriteU16(ah, (USHORT)a->Type);
+			IkeV2WriteU16(ah + 2, (USHORT)(a->Value != NULL ? a->Value->Size : 0));
+			WriteBuf(b, ah, sizeof(ah));
+			if (a->Value != NULL && a->Value->Size > 0)
+			{
+				WriteBufBuf(b, a->Value);
+			}
+		}
+	}
+
+	return b;
+}
+
+// Create a new IKEv2 SA payload
+IKE_PACKET_PAYLOAD *IkeV2NewSaPayload(LIST *proposal_list)
+{
+	IKE_PACKET_PAYLOAD *p;
+	// Validate arguments
+	if (proposal_list == NULL)
+	{
+		return NULL;
+	}
+
+	p = IkeNewPayload(IKEV2_PAYLOAD_SA);
+	p->Payload.SaV2.ProposalList = proposal_list;
+
+	return p;
+}
+
+// Create a new IKEv2 proposal
+IKEV2_PROPOSAL *IkeV2NewProposal(UCHAR number, UCHAR protocol_id, void *spi, UINT spi_size, LIST *transform_list)
+{
+	IKEV2_PROPOSAL *p;
+	// Validate arguments
+	if (transform_list == NULL)
+	{
+		return NULL;
+	}
+
+	p = ZeroMalloc(sizeof(IKEV2_PROPOSAL));
+	p->Number = number;
+	p->ProtocolId = protocol_id;
+	if (spi != NULL && spi_size > 0)
+	{
+		p->Spi = MemToBuf(spi, spi_size);
+	}
+	p->TransformList = transform_list;
+
+	return p;
+}
+
+// Create a new IKEv2 transform without attributes
+IKEV2_TRANSFORM *IkeV2NewTransform(UCHAR transform_type, USHORT transform_id)
+{
+	IKEV2_TRANSFORM *t = ZeroMalloc(sizeof(IKEV2_TRANSFORM));
+	t->TransformType = transform_type;
+	t->TransformId = transform_id;
+	t->AttributeList = NewListFast(NULL);
+	return t;
+}
+
+// Create a new IKEv2 transform with a single TLV attribute
+IKEV2_TRANSFORM *IkeV2NewTransformTlv(UCHAR transform_type, USHORT transform_id, UINT attr_type, void *attr_value, UINT attr_size)
+{
+	IKEV2_TRANSFORM *t = IkeV2NewTransform(transform_type, transform_id);
+	Add(t->AttributeList, IkeV2NewTransformAttributeTlv(attr_type, attr_value, attr_size));
+	return t;
+}
+
+// Create a new TV-formatted IKEv2 transform attribute
+IKEV2_TRANSFORM_ATTRIBUTE *IkeV2NewTransformAttributeTv(UINT type, USHORT value)
+{
+	IKEV2_TRANSFORM_ATTRIBUTE *a = ZeroMalloc(sizeof(IKEV2_TRANSFORM_ATTRIBUTE));
+	a->IsTv = true;
+	a->Type = type;
+	a->Value16 = value;
+	return a;
+}
+
+// Create a new TLV-formatted IKEv2 transform attribute
+IKEV2_TRANSFORM_ATTRIBUTE *IkeV2NewTransformAttributeTlv(UINT type, void *value, UINT size)
+{
+	IKEV2_TRANSFORM_ATTRIBUTE *a = ZeroMalloc(sizeof(IKEV2_TRANSFORM_ATTRIBUTE));
+	a->IsTv = false;
+	a->Type = type;
+	a->Value = value != NULL ? MemToBuf(value, size) : NULL;
+	return a;
+}
+
+// Get the number of transforms of the specified type in an IKEv2 proposal
+UINT IkeV2GetTransformIdNum(IKEV2_PROPOSAL *p, UCHAR transform_type)
+{
+	UINT i, num = 0;
+	// Validate arguments
+	if (p == NULL)
+	{
+		return 0;
+	}
+
+	for (i = 0; i < LIST_NUM(p->TransformList); i++)
+	{
+		IKEV2_TRANSFORM *t = LIST_DATA(p->TransformList, i);
+		if (t->TransformType == transform_type)
+		{
+			num++;
+		}
+	}
+
+	return num;
+}
+
+// Get the transform ID of the specified type and index in an IKEv2 proposal
+UINT IkeV2GetTransformId(IKEV2_PROPOSAL *p, UCHAR transform_type, UINT index)
+{
+	UINT i, num = 0;
+	// Validate arguments
+	if (p == NULL)
+	{
+		return 0;
+	}
+
+	for (i = 0; i < LIST_NUM(p->TransformList); i++)
+	{
+		IKEV2_TRANSFORM *t = LIST_DATA(p->TransformList, i);
+		if (t->TransformType == transform_type)
+		{
+			if (num == index)
+			{
+				return t->TransformId;
+			}
+			num++;
+		}
+	}
+
+	return 0;
+}
+
+// Get the key length attribute (in bits) of the encryption transforms of an IKEv2 proposal
+USHORT IkeV2GetKeyLengthBit(IKEV2_PROPOSAL *p)
+{
+	UINT i, j;
+	// Validate arguments
+	if (p == NULL)
+	{
+		return 0;
+	}
+
+	for (i = 0; i < LIST_NUM(p->TransformList); i++)
+	{
+		IKEV2_TRANSFORM *t = LIST_DATA(p->TransformList, i);
+		if (t->TransformType == IKEV2_TRANSFORM_TYPE_ENCR)
+		{
+			for (j = 0; j < LIST_NUM(t->AttributeList); j++)
+			{
+				IKEV2_TRANSFORM_ATTRIBUTE *a = LIST_DATA(t->AttributeList, j);
+				if (a->IsTv && a->Type == IKEV2_SA_ATTR_KEY_LENGTH)
+				{
+					return a->Value16;
+				}
+			}
+		}
+	}
+
+	return 0;
+}
+
+//// Notification payload (IKEv2)
+
+// Parse the IKEv2 notification payload
+bool IkeV2ParseNotifyPayload(IKE_PACKET_NOTICE_PAYLOAD *t, BUF *b)
+{
+	UCHAR nh[4];
+	// Validate arguments
+	if (t == NULL || b == NULL)
+	{
+		return false;
+	}
+
+	// ProtocolId(1) SpiSize(1) NotifyMessageType(2)
+	if (ReadBuf(b, nh, sizeof(nh)) != sizeof(nh))
+	{
+		return false;
+	}
+
+	t->ProtocolId = nh[0];
+	t->MessageType = IkeV2ReadU16(nh + 2);
+
+	if (nh[1] > 0)
+	{
+		t->Spi = ReadBufFromBuf(b, nh[1]);
+		if (t->Spi == NULL)
+		{
+			return false;
+		}
+	}
+
+	t->MessageData = ReadRemainBuf(b);
+
+	return true;
+}
+
+// Build the IKEv2 notification payload
+BUF *IkeV2BuildNoticePayload(IKE_PACKET_NOTICE_PAYLOAD *t)
+{
+	BUF *b;
+	UCHAR nh[4];
+	// Validate arguments
+	if (t == NULL)
+	{
+		return NULL;
+	}
+
+	Zero(nh, sizeof(nh));
+	nh[0] = t->ProtocolId;
+	nh[1] = t->Spi != NULL ? (UCHAR)t->Spi->Size : 0;
+	IkeV2WriteU16(nh + 2, t->MessageType);
+
+	b = NewBuf();
+	WriteBuf(b, nh, sizeof(nh));
+
+	if (t->Spi != NULL && t->Spi->Size > 0)
+	{
+		WriteBufBuf(b, t->Spi);
+	}
+
+	if (t->MessageData != NULL && t->MessageData->Size > 0)
+	{
+		WriteBufBuf(b, t->MessageData);
+	}
+
+	return b;
+}
+
+// Create a new IKEv2 notification payload
+IKE_PACKET_PAYLOAD *IkeV2NewNotifyPayload(UCHAR protocol_id, USHORT message_type,
+										  void *spi, UINT spi_size,
+										  void *message, UINT message_size)
+{
+	IKE_PACKET_PAYLOAD *p;
+	// Validate arguments
+	if (spi_size > 255)
+	{
+		return NULL;
+	}
+
+	p = IkeNewPayload(IKEV2_PAYLOAD_NOTIFY);
+	p->Payload.Notice.ProtocolId = protocol_id;
+	p->Payload.Notice.MessageType = message_type;
+	if (spi != NULL && spi_size > 0)
+	{
+		p->Payload.Notice.Spi = MemToBuf(spi, spi_size);
+	}
+	if (message != NULL && message_size > 0)
+	{
+		p->Payload.Notice.MessageData = MemToBuf(message, message_size);
+	}
+
+	return p;
+}
+
+// Create an IKEv2 error notification payload for the IKE SA
+IKE_PACKET_PAYLOAD *IkeV2NewNoticeErrorPayload(USHORT message_type, UINT64 init_cookie, UINT64 resp_cookie)
+{
+	// For notifications that concern the IKE SA itself, the Protocol ID and
+	// the SPI size must be zero (RFC 7296 section 3.10, errata ID 6940)
+	return IkeV2NewNotifyPayload(0, message_type, NULL, 0, NULL, 0);
+}
+
+//// Delete payload (IKEv2)
+
+// Parse the IKEv2 deletion payload
+bool IkeV2ParseDeletePayload(IKE_PACKET_DELETE_PAYLOAD *t, BUF *b)
+{
+	UCHAR dh[4];
+	USHORT num_spis;
+	UCHAR spi_size;
+	UINT i;
+	bool ok = true;
+	// Validate arguments
+	if (t == NULL || b == NULL)
+	{
+		return false;
+	}
+
+	// ProtocolId(1) SpiSize(1) NumSPIs(2)
+	if (ReadBuf(b, dh, sizeof(dh)) != sizeof(dh))
+	{
+		return false;
+	}
+
+	t->ProtocolId = dh[0];
+	spi_size = dh[1];
+	num_spis = IkeV2ReadU16(dh + 2);
+
+	t->SpiList = NewListFast(NULL);
+
+	for (i = 0; i < num_spis; i++)
+	{
+		BUF *spi = ReadBufFromBuf(b, spi_size);
+		if (spi == NULL)
+		{
+			ok = false;
+			break;
+		}
+		Add(t->SpiList, spi);
+	}
+
+	if (ok == false)
+	{
+		IkeFreeDeletePayload(t);
+		return false;
+	}
+
+	return true;
+}
+
+// Build the IKEv2 deletion payload
+BUF *IkeV2BuildDeletePayload(IKE_PACKET_DELETE_PAYLOAD *t)
+{
+	BUF *b;
+	UCHAR dh[4];
+	UINT i;
+	// Validate arguments
+	if (t == NULL)
+	{
+		return NULL;
+	}
+
+	Zero(dh, sizeof(dh));
+	dh[0] = t->ProtocolId;
+	if (LIST_NUM(t->SpiList) > 0)
+	{
+		BUF *first = LIST_DATA(t->SpiList, 0);
+		dh[1] = (UCHAR)first->Size;
+	}
+	IkeV2WriteU16(dh + 2, (USHORT)LIST_NUM(t->SpiList));
+
+	b = NewBuf();
+	WriteBuf(b, dh, sizeof(dh));
+
+	for (i = 0; i < LIST_NUM(t->SpiList); i++)
+	{
+		BUF *spi = LIST_DATA(t->SpiList, i);
+		WriteBufBuf(b, spi);
+	}
+
+	return b;
+}
+
+// Create a new IKEv2 deletion payload
+IKE_PACKET_PAYLOAD *IkeV2NewDeletePayload(UCHAR protocol_id, LIST *spi_list)
+{
+	IKE_PACKET_PAYLOAD *p;
+	// Validate arguments
+	if (spi_list == NULL)
+	{
+		return NULL;
+	}
+
+	p = IkeNewPayload(IKEV2_PAYLOAD_DELETE);
+	p->Payload.Delete.ProtocolId = protocol_id;
+	p->Payload.Delete.SpiList = spi_list;
+
+	return p;
+}
+
+//// Traffic Selector payload (IKEv2)
+
+// Parse the IKEv2 traffic selector payload
+bool IkeV2ParseTsPayload(IKEV2_PACKET_TS_PAYLOAD *t, BUF *b)
+{
+	UCHAR th[4];
+	UCHAR num_ts;
+	UINT i;
+	bool error = false;
+	// Validate arguments
+	if (t == NULL || b == NULL)
+	{
+		return false;
+	}
+
+	// NumTSs(1) Reserved(3)
+	if (ReadBuf(b, th, sizeof(th)) != sizeof(th))
+	{
+		return false;
+	}
+
+	num_ts = th[0];
+
+	t->TsList = NewListFast(NULL);
+
+	for (i = 0; i < num_ts; i++)
+	{
+		UCHAR sh[4];
+		USHORT selector_length;
+		IKEV2_TS *ts;
+
+		// TSType(1) IPProtocolID(1) SelectorLength(2)
+		if (ReadBuf(b, sh, sizeof(sh)) != sizeof(sh))
+		{
+			error = true;
+			break;
+		}
+
+		selector_length = IkeV2ReadU16(sh + 2);
+
+		if (sh[0] != IKEV2_TS_IPV4_ADDR_RANGE && sh[0] != IKEV2_TS_IPV6_ADDR_RANGE)
+		{
+			error = true;
+			break;
+		}
+
+		if (sh[0] == IKEV2_TS_IPV4_ADDR_RANGE && selector_length != 16)
+		{
+			error = true;
+			break;
+		}
+
+		if (sh[0] == IKEV2_TS_IPV6_ADDR_RANGE && selector_length != 40)
+		{
+			error = true;
+			break;
+		}
+
+		ts = ZeroMalloc(sizeof(IKEV2_TS));
+		ts->Type = sh[0];
+		ts->IpProtocol = sh[1];
+
+		// StartPort(2) EndPort(2)
+		{
+			UCHAR ph[4];
+			if (ReadBuf(b, ph, sizeof(ph)) != sizeof(ph))
+			{
+				Free(ts);
+				error = true;
+				break;
+			}
+			ts->StartPort = IkeV2ReadU16(ph);
+			ts->EndPort = IkeV2ReadU16(ph + 2);
+		}
+
+		// StartAddress + EndAddress
+		{
+			UINT addr_size = (ts->Type == IKEV2_TS_IPV4_ADDR_RANGE) ? 4 : 16;
+			UCHAR addr[16];
+
+			if (ReadBuf(b, addr, addr_size) != addr_size)
+			{
+				Free(ts);
+				error = true;
+				break;
+			}
+
+			if (addr_size == 4)
+			{
+				SetIP(&ts->StartAddress, addr[0], addr[1], addr[2], addr[3]);
+			}
+			else
+			{
+				SetIP6(&ts->StartAddress, addr);
+			}
+
+			if (ReadBuf(b, addr, addr_size) != addr_size)
+			{
+				Free(ts);
+				error = true;
+				break;
+			}
+
+			if (addr_size == 4)
+			{
+				SetIP(&ts->EndAddress, addr[0], addr[1], addr[2], addr[3]);
+			}
+			else
+			{
+				SetIP6(&ts->EndAddress, addr);
+			}
+		}
+
+		Add(t->TsList, ts);
+	}
+
+	if (error || LIST_NUM(t->TsList) == 0)
+	{
+		IkeV2FreeTsPayload(t);
+		return false;
+	}
+
+	return true;
+}
+
+// Release the IKEv2 traffic selector payload
+void IkeV2FreeTsPayload(IKEV2_PACKET_TS_PAYLOAD *t)
+{
+	UINT i;
+	// Validate arguments
+	if (t == NULL)
+	{
+		return;
+	}
+
+	if (t->TsList != NULL)
+	{
+		for (i = 0; i < LIST_NUM(t->TsList); i++)
+		{
+			IKEV2_TS *ts = LIST_DATA(t->TsList, i);
+			IkeV2FreeTs(ts);
+		}
+		ReleaseList(t->TsList);
+	}
+}
+
+// Release an IKEv2 traffic selector
+void IkeV2FreeTs(IKEV2_TS *ts)
+{
+	if (ts == NULL)
+	{
+		return;
+	}
+
+	Free(ts);
+}
+
+// Build a single IKEv2 traffic selector
+BUF *IkeV2BuildTs(IKEV2_TS *ts)
+{
+	BUF *b;
+	UCHAR sh[4];
+	UINT addr_size;
+	// Validate arguments
+	if (ts == NULL)
+	{
+		return NULL;
+	}
+
+	addr_size = (ts->Type == IKEV2_TS_IPV6_ADDR_RANGE) ? 16 : 4;
+
+	b = NewBuf();
+
+	Zero(sh, sizeof(sh));
+	sh[0] = ts->Type == IKEV2_TS_IPV6_ADDR_RANGE ? IKEV2_TS_IPV6_ADDR_RANGE : IKEV2_TS_IPV4_ADDR_RANGE;
+	sh[1] = ts->IpProtocol;
+	IkeV2WriteU16(sh + 2, (USHORT)(4 + 4 + addr_size * 2));
+	WriteBuf(b, sh, sizeof(sh));
+
+	{
+		UCHAR ph[4];
+		IkeV2WriteU16(ph, (USHORT)ts->StartPort);
+		IkeV2WriteU16(ph + 2, (USHORT)ts->EndPort);
+		WriteBuf(b, ph, sizeof(ph));
+	}
+
+	if (addr_size == 4)
+	{
+		WriteBuf(b, IPV4(ts->StartAddress.address), IPV4_SIZE);
+		WriteBuf(b, IPV4(ts->EndAddress.address), IPV4_SIZE);
+	}
+	else
+	{
+		WriteBuf(b, ts->StartAddress.address, 16);
+		WriteBuf(b, ts->EndAddress.address, 16);
+	}
+
+	return b;
+}
+
+// Build the IKEv2 traffic selector payload
+BUF *IkeV2BuildTsPayload(IKEV2_PACKET_TS_PAYLOAD *t)
+{
+	BUF *b;
+	UCHAR th[4];
+	UINT i;
+	// Validate arguments
+	if (t == NULL || t->TsList == NULL)
+	{
+		return NULL;
+	}
+
+	Zero(th, sizeof(th));
+	th[0] = (UCHAR)LIST_NUM(t->TsList);
+
+	b = NewBuf();
+	WriteBuf(b, th, sizeof(th));
+
+	for (i = 0; i < LIST_NUM(t->TsList); i++)
+	{
+		IKEV2_TS *ts = LIST_DATA(t->TsList, i);
+		BUF *ts_buf = IkeV2BuildTs(ts);
+		WriteBufBuf(b, ts_buf);
+		FreeBuf(ts_buf);
+	}
+
+	return b;
+}
+
+// Create a new IKEv2 traffic selector payload
+IKE_PACKET_PAYLOAD *IkeV2NewTsPayload(UCHAR payload_type, LIST *ts_list)
+{
+	IKE_PACKET_PAYLOAD *p;
+	// Validate arguments
+	if (ts_list == NULL || (payload_type != IKEV2_PAYLOAD_TS_INITIATOR && payload_type != IKEV2_PAYLOAD_TS_RESPONDER))
+	{
+		return NULL;
+	}
+
+	p = IkeNewPayload(payload_type);
+	p->Payload.TsV2.TsList = ts_list;
+
+	return p;
+}
+
+// Create a traffic selector that covers everything
+IKEV2_TS *IkeV2NewTsAny(bool is_ipv6)
+{
+	IKEV2_TS *ts = ZeroMalloc(sizeof(IKEV2_TS));
+	UCHAR any4[4] = {0, 0, 0, 0};
+	UCHAR any6[16];
+	UCHAR all4[4] = {255, 255, 255, 255};
+
+	Zero(any6, sizeof(any6));
+
+	ts->Type = is_ipv6 ? IKEV2_TS_IPV6_ADDR_RANGE : IKEV2_TS_IPV4_ADDR_RANGE;
+	ts->IpProtocol = 0;
+	ts->StartPort = 0;
+	ts->EndPort = 65535;
+
+	if (is_ipv6 == false)
+	{
+		SetIP(&ts->StartAddress, any4[0], any4[1], any4[2], any4[3]);
+		SetIP(&ts->EndAddress, all4[0], all4[1], all4[2], all4[3]);
+	}
+	else
+	{
+		SetIP6(&ts->StartAddress, any6);
+		// The IPv6 "any" range ends with all bits set
+		Zero(any6, sizeof(any6));
+		SetIP6(&ts->EndAddress, any6);
+		ts->EndAddress.address[15] = 0xff;
+	}
+
+	return ts;
+}
+
+//// Configuration payload (IKEv2)
+
+// Parse the IKEv2 configuration payload
+bool IkeV2ParseCpPayload(IKEV2_PACKET_CP_PAYLOAD *t, BUF *b)
+{
+	UCHAR ch[4];
+	UINT size, pos;
+	// Validate arguments
+	if (t == NULL || b == NULL)
+	{
+		return false;
+	}
+
+	// CFGType(1) Reserved(3)
+	if (ReadBuf(b, ch, sizeof(ch)) != sizeof(ch))
+	{
+		return false;
+	}
+
+	t->Type = ch[0];
+	t->AttributeList = NewListFast(NULL);
+
+	// Attributes: [R(1bit) | Type(15bits)](2) Length(2) Value(...)
+	size = b->Size - b->Current;
+	pos = b->Current;
+
+	while (size - pos >= 4)
+	{
+		UCHAR *ap = ((UCHAR *)b->Buf) + pos;
+		USHORT raw = IkeV2ReadU16(ap);
+		UINT attr_type = raw & 0x7fff;
+		USHORT value_length = IkeV2ReadU16(ap + 2);
+
+		pos += 4;
+		if (value_length > size - pos)
+		{
+			break;
+		}
+
+		Add(t->AttributeList, IkeV2NewCpAttribute(attr_type, ap + pos, value_length));
+		pos += value_length;
+	}
+
+	return true;
+}
+
+// Release the IKEv2 configuration payload
+void IkeV2FreeCpPayload(IKEV2_PACKET_CP_PAYLOAD *t)
+{
+	UINT i;
+	// Validate arguments
+	if (t == NULL)
+	{
+		return;
+	}
+
+	if (t->AttributeList != NULL)
+	{
+		for (i = 0; i < LIST_NUM(t->AttributeList); i++)
+		{
+			IKEV2_CP_ATTRIBUTE *a = LIST_DATA(t->AttributeList, i);
+			IkeV2FreeCpAttribute(a);
+		}
+		ReleaseList(t->AttributeList);
+	}
+}
+
+// Release an IKEv2 configuration attribute
+void IkeV2FreeCpAttribute(IKEV2_CP_ATTRIBUTE *a)
+{
+	if (a == NULL)
+	{
+		return;
+	}
+
+	if (a->Value != NULL)
+	{
+		FreeBuf(a->Value);
+	}
+
+	Free(a);
+}
+
+// Build the IKEv2 configuration payload
+BUF *IkeV2BuildCpPayload(IKEV2_PACKET_CP_PAYLOAD *t)
+{
+	BUF *b;
+	UCHAR ch[4];
+	UINT i;
+	// Validate arguments
+	if (t == NULL)
+	{
+		return NULL;
+	}
+
+	Zero(ch, sizeof(ch));
+	ch[0] = t->Type;
+
+	b = NewBuf();
+	WriteBuf(b, ch, sizeof(ch));
+
+	for (i = 0; i < LIST_NUM(t->AttributeList); i++)
+	{
+		IKEV2_CP_ATTRIBUTE *a = LIST_DATA(t->AttributeList, i);
+		UCHAR ah[4];
+
+		// In IKEv2 the highest attribute bit is reserved and the length
+		// field always carries the value length (RFC 7296 section 3.15)
+		IkeV2WriteU16(ah, (USHORT)a->Type);
+		IkeV2WriteU16(ah + 2, (USHORT)(a->Value != NULL ? a->Value->Size : 0));
+
+		WriteBuf(b, ah, sizeof(ah));
+
+		if (a->Value != NULL && a->Value->Size > 0)
+		{
+			WriteBufBuf(b, a->Value);
+		}
+	}
+
+	return b;
+}
+
+// Create a new IKEv2 configuration payload
+IKE_PACKET_PAYLOAD *IkeV2NewCpPayload(UCHAR type, LIST *attr_list)
+{
+	IKE_PACKET_PAYLOAD *p;
+	// Validate arguments
+	if (attr_list == NULL)
+	{
+		return NULL;
+	}
+
+	p = IkeNewPayload(IKEV2_PAYLOAD_CONFIGURATION);
+	p->Payload.CpV2.Type = type;
+	p->Payload.CpV2.AttributeList = attr_list;
+
+	return p;
+}
+
+// Create a new IKEv2 configuration attribute
+IKEV2_CP_ATTRIBUTE *IkeV2NewCpAttribute(UINT type, void *value, UINT size)
+{
+	IKEV2_CP_ATTRIBUTE *a = ZeroMalloc(sizeof(IKEV2_CP_ATTRIBUTE));
+	a->Type = type;
+	if (value != NULL && size > 0)
+	{
+		a->Value = MemToBuf(value, size);
+	}
+	return a;
+}
+
+//// AUTH payload (IKEv2)
+
+// Parse the IKEv2 AUTH payload
+bool IkeV2ParseAuthPayload(IKEV2_PACKET_AUTH_PAYLOAD *t, BUF *b)
+{
+	UCHAR ah[4];
+	// Validate arguments
+	if (t == NULL || b == NULL || b->Size < sizeof(ah))
+	{
+		return false;
+	}
+
+	// AuthMethod(1) Reserved(3) AuthenticationData(...)
+	if (ReadBuf(b, ah, sizeof(ah)) != sizeof(ah))
+	{
+		return false;
+	}
+
+	t->Method = ah[0];
+	t->AuthData = ReadRemainBuf(b);
+
+	return true;
+}
+
+// Release the IKEv2 AUTH payload
+void IkeV2FreeAuthPayload(IKEV2_PACKET_AUTH_PAYLOAD *t)
+{
+	if (t == NULL)
+	{
+		return;
+	}
+
+	if (t->AuthData != NULL)
+	{
+		FreeBuf(t->AuthData);
+	}
+}
+
+// Build the IKEv2 AUTH payload
+BUF *IkeV2BuildAuthPayload(IKEV2_PACKET_AUTH_PAYLOAD *t)
+{
+	BUF *b;
+	UCHAR ah[4];
+	// Validate arguments
+	if (t == NULL)
+	{
+		return NULL;
+	}
+
+	Zero(ah, sizeof(ah));
+	ah[0] = t->Method;
+
+	b = NewBuf();
+	WriteBuf(b, ah, sizeof(ah));
+
+	if (t->AuthData != NULL && t->AuthData->Size > 0)
+	{
+		WriteBufBuf(b, t->AuthData);
+	}
+
+	return b;
+}
+
+// Create a new IKEv2 AUTH payload
+IKE_PACKET_PAYLOAD *IkeV2NewAuthPayload(UCHAR method, void *auth_data, UINT auth_size)
+{
+	IKE_PACKET_PAYLOAD *p;
+	// Validate arguments
+	if (auth_data == NULL || auth_size == 0)
+	{
+		return NULL;
+	}
+
+	p = IkeNewPayload(IKEV2_PAYLOAD_AUTH);
+	p->Payload.AuthV2.Method = method;
+	p->Payload.AuthV2.AuthData = MemToBuf(auth_data, auth_size);
+
+	return p;
+}
+
+//// ID payload (IKEv2)
+
+// Create a new IKEv2 IDi / IDr payload
+IKE_PACKET_PAYLOAD *IkeV2NewIdPayload(UCHAR payload_type, UCHAR id_type, void *id_data, UINT id_size)
+{
+	IKE_PACKET_PAYLOAD *p;
+	// Validate arguments
+	if ((payload_type != IKEV2_PAYLOAD_ID_INITIATOR && payload_type != IKEV2_PAYLOAD_ID_RESPONDER) ||
+		id_data == NULL || id_size == 0)
+	{
+		return NULL;
+	}
+
+	p = IkeNewIdPayload(id_type, 0, 0, id_data, id_size);
+	if (p != NULL)
+	{
+		p->PayloadType = payload_type;
+	}
+
+	return p;
+}
+
+//// Key derivation (RFC 7296 section 2.13)
+
+// Calculate prf+ (K, S), generating any number of keying bytes
+void IkeCalcPrfPlus(IKE_HASH *prf, void *key, UINT key_size, void *seed, UINT seed_size, void *dst, UINT dst_size)
+{
+	UCHAR t[IKE_MAX_HASH_SIZE];
+	UCHAR *out;
+	UINT generated = 0;
+	UINT t_size = 0;
+	UCHAR counter = 1;
+	// Validate arguments
+	if (prf == NULL || key == NULL || key_size == 0 || seed == NULL || seed_size == 0 ||
+		dst == NULL || dst_size == 0)
+	{
+		return;
+	}
+
+	out = (UCHAR *)dst;
+
+	// T(1) = prf(K, S | 0x01), T(n) = prf(K, T(n-1) | S | n)
+	while (generated < dst_size)
+	{
+		BUF *b = NewBuf();
+		UINT take;
+
+		if (t_size >= 1)
+		{
+			WriteBuf(b, t, t_size);
+		}
+		WriteBuf(b, seed, seed_size);
+		WriteBuf(b, &counter, 1);
+
+		IkeHMac(prf, t, key, key_size, b->Buf, b->Size);
+
+		FreeBuf(b);
+
+		t_size = prf->HashSize;
+		take = MIN(t_size, dst_size - generated);
+		Copy(out + generated, t, take);
+		generated += take;
+
+		counter++;
+	}
+}
+
+// Calculate prf+ (K, S) and return the result as a BUF
+BUF *IkeCalcPrfPlusBuf(IKE_HASH *prf, void *key, UINT key_size, void *seed, UINT seed_size, UINT dst_size)
+{
+	UCHAR *tmp;
+	BUF *b;
+	// Validate arguments
+	if (prf == NULL || dst_size == 0)
+	{
+		return NULL;
+	}
+
+	tmp = ZeroMalloc(dst_size);
+
+	IkeCalcPrfPlus(prf, key, key_size, seed, seed_size, tmp, dst_size);
+
+	b = MemToBuf(tmp, dst_size);
+
+	Free(tmp);
+
+	return b;
+}

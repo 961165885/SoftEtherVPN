@@ -55,6 +55,10 @@ endif()
 
 add_definitions(-D_REENTRANT -DREENTRANT -D_THREAD_SAFE -D_THREADSAFE -DTHREAD_SAFE -DTHREADSAFE -D_FILE_OFFSET_BITS=64)
 
+if(CMAKE_C_BYTE_ORDER STREQUAL "BIG_ENDIAN")
+  add_definitions(-DIS_BIG_ENDIAN)
+endif()
+
 # Add /src to the include paths
 include_directories(.)
 

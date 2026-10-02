@@ -1863,6 +1863,17 @@ LI_PREFIX_IPSEC				IPsec ESP 会话 (IPsec SA) %u (客户端: %u) (%S:%u -> %S:%
 LI_START					IPsec 2.0 版 (ISAKMP/IKEv1) 处理模块已开启。
 LI_STOPPING					IPsec 2.0 版 (ISAKMP/IKEv1) 处理模块现在正在关闭。
 LI_STOP						IPsec 2.0 版 (ISAKMP/IKEv1) 处理模块已正常关闭。
+LI2_IKE_SA_INIT_SENT		The IKEv2 IKE_SA_INIT response was sent. Initiator Cookie: 0x%I64X, Responder Cookie: 0x%I64X, DH Group: %S, Cipher Algorithm: %S, Cipher Key Size: %u bits, Integrity Algorithm: %S, PRF Algorithm: %S, NAT Detected: %s
+LI2_IKE_SA_ESTABLISHED	The IKEv2 IKE SA was established. Initiator Cookie: 0x%I64X, Responder Cookie: 0x%I64X, Client ID: %S, Transport Mode: %s, NAT Detected: %s, Child SA Cipher Algorithm: %S (%u bits), Child SA Integrity Algorithm: %S
+LI2_DELETE_IKE_SA		This IKEv2 IKE SA is deleted.
+LI2_DELETE_IKE_CLIENT	This IKEv2 IPsec Client is deleted.
+LI2_DELETE_RECEIVED		A delete request for the IKEv2 IKE SA was received from the client.
+LI2_AUTH_FAILED			The IKEv2 authentication of the client failed.
+LI2_EAP_UNSUPPORTED		The client requested EAP authentication which is not supported yet.
+LI2_SK_ICV_ERROR		The integrity check of a received IKEv2 encrypted payload failed.
+LI2_INVALID_PACKET		A broken IKEv2 packet was received.
+LI2_CREATE_CHILD_SA_REJECTED	The IKEv2 CREATE_CHILD_SA request was rejected. Rekeying and additional Child SAs are not supported yet.
+LI2_DEBUG			IKEv2 debug: %u %u %u %u
 LI_NUM_IPSEC_SA				在关机时刻, 余下的 IPsec SA 数量是 %u。
 LI_NUM_IKE_SA				在关机时刻, 余下的 IKE SA 数量是 %u。
 LI_NUM_IKE_CLIENTS			在关机时刻, 余下的 IKE 客户端数量是 %u。
