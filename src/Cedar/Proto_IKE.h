@@ -54,6 +54,10 @@
 // IKEv2 ESP anti-replay window size (RFC 4303 section 3.4.3)
 #define	IKEV2_ESP_REPLAY_WINDOW_SIZE		128
 
+// IKEv2 cookie flood protection (RFC 7296 section 2.6)
+#define	IKEV2_COOKIE_HALF_OPEN_THRESHOLD	1000	// Number of half-open IKEv2 SAs that triggers cookie mode
+#define	IKEV2_COOKIE_LIFETIME				120		// Seconds a cookie stays valid
+
 // ESP
 #define	IKE_ESP_HASH_SIZE					12	// The hash size for the ESP packet
 
@@ -342,6 +346,9 @@ struct IKE_SERVER
 
 	// Setting data
 	char Secret[MAX_SIZE];						// Pre-shared key
+
+	// IKEv2 stateless cookie secret (random per server start)
+	UCHAR V2CookieKey[SHA1_SIZE];
 };
 
 

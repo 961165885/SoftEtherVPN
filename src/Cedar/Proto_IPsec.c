@@ -474,6 +474,9 @@ void IPsecServerSetServices(IPSEC_SERVER *s, IPSEC_SERVICES *sl)
 		if (IsEmptyStr(sl->IPsec_Secret) == false)
 		{
 			StrCpy(s->Ike->Secret, sizeof(s->Ike->Secret), sl->IPsec_Secret);
+
+	// Random per-start secret for the stateless IKEv2 cookie
+	Rand(s->Ike->V2CookieKey, sizeof(s->Ike->V2CookieKey));
 		}
 
 		IPsecNormalizeServiceSetting(s);

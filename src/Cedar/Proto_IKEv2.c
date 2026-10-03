@@ -233,6 +233,127 @@ void ProcIkeV2PacketRecv(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header)
 	}
 }
 
+//// Stateless cookie (RFC 7296 section 2.6)
+//
+// The cookie is an HMAC over the initiator SPI, a coarse timestamp window
+// and the peer address, so no state has to be kept for the flood of
+// unauthenticated IKE_SA_INIT requests.
+
+// Count the half-open IKEv2 IKE SAs (response sent, IKE_AUTH not completed)
+static UINT IkeV2CountHalfOpenSas(IKE_SERVER *ike)
+{
+	UINT i, num = 0;
+	// Validate arguments
+	if (ike == NULL)
+	{
+		return 0;
+	}
+
+	for (i = 0; i < LIST_NUM(ike->IkeSaList); i++)
+	{
+		IKE_SA *sa = LIST_DATA(ike->IkeSaList, i);
+
+		if (sa->MajorVersion == IKE_MAJOR_VERSION_2 &&
+			sa->V2State == IKEV2_STATE_SA_INIT_SENT && sa->Established == false)
+		{
+			num++;
+		}
+	}
+
+	return num;
+}
+
+// Compute the current cookie value for a peer
+static void IkeV2CalcCookie(IKE_SERVER *ike, UCHAR *dst, IKE_PACKET *header, UDPPACKET *p)
+{
+	BUF *b;
+	UINT64 now_window;
+	// Validate arguments
+	if (ike == NULL || dst == NULL || header == NULL || p == NULL)
+	{
+		return;
+	}
+
+	now_window = Tick64() / (UINT64)(IKEV2_COOKIE_LIFETIME * 1000);
+
+	b = NewBuf();
+	WriteBufInt64(b, header->InitiatorCookie);
+	WriteBuf(b, &now_window, sizeof(now_window));
+	if (IsIP6(&p->SrcIP))
+	{
+		WriteBuf(b, p->SrcIP.address, 16);
+	}
+	else
+	{
+		WriteBuf(b, IPV4(p->SrcIP.address), IPV4_SIZE);
+	}
+
+	HMacSha1(dst, ike->V2CookieKey, sizeof(ike->V2CookieKey), b->Buf, b->Size);
+
+	FreeBuf(b);
+}
+
+// Verify a cookie notify sent by the peer: accept the current time window
+// or the previous one (covers a retry across the window boundary)
+static bool IkeV2VerifyCookie(IKE_SERVER *ike, IKE_PACKET *pr, IKE_PACKET *header, UDPPACKET *p)
+{
+	IKE_PACKET_PAYLOAD *cookie;
+	UCHAR expected[SHA1_SIZE];
+	UINT64 tmp_window;
+	// Validate arguments
+	if (ike == NULL || pr == NULL || header == NULL || p == NULL)
+	{
+		return false;
+	}
+
+	cookie = IkeV2GetNotifyPayload(pr, IKEV2_NOTIFY_COOKIE, 0);
+
+	if (cookie == NULL)
+	{
+		return false;
+	}
+
+	if (cookie->Payload.Notice.MessageData == NULL ||
+		cookie->Payload.Notice.MessageData->Size != SHA1_SIZE)
+	{
+		return false;
+	}
+
+	// Current window
+	IkeV2CalcCookie(ike, expected, header, p);
+	if (Cmp(cookie->Payload.Notice.MessageData->Buf, expected, SHA1_SIZE) == 0)
+	{
+		return true;
+	}
+
+	// Previous window
+	tmp_window = Tick64() / (UINT64)(IKEV2_COOKIE_LIFETIME * 1000) - 1;
+	{
+		BUF *b = NewBuf();
+		WriteBufInt64(b, header->InitiatorCookie);
+		WriteBuf(b, &tmp_window, sizeof(tmp_window));
+		if (IsIP6(&p->SrcIP))
+		{
+			WriteBuf(b, p->SrcIP.address, 16);
+		}
+		else
+		{
+			WriteBuf(b, IPV4(p->SrcIP.address), IPV4_SIZE);
+		}
+
+		HMacSha1(expected, ike->V2CookieKey, sizeof(ike->V2CookieKey), b->Buf, b->Size);
+
+		FreeBuf(b);
+	}
+
+	if (Cmp(cookie->Payload.Notice.MessageData->Buf, expected, SHA1_SIZE) == 0)
+	{
+		return true;
+	}
+
+	return false;
+}
+
 //// IKE_SA_INIT
 
 // Process an IKE_SA_INIT request
@@ -276,6 +397,33 @@ void IkeV2ProcSaInit(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, IKE_CLIE
 
 		// In any other state the packet is a stray duplicate: discard it
 		return;
+	}
+
+	// Cookie based flood protection: when too many half-open IKE SAs exist,
+	// require a cookie before doing any DH work. The retry carries the
+	// cookie notify and passes the gate (RFC 7296 section 2.6)
+	if (IkeV2CountHalfOpenSas(ike) > IKEV2_COOKIE_HALF_OPEN_THRESHOLD)
+	{
+		bool cookie_ok = false;
+
+		pr = IkeParse(p->Data, p->Size, NULL);
+
+		if (pr != NULL)
+		{
+			cookie_ok = IkeV2VerifyCookie(ike, pr, header, p);
+			IkeFree(pr);
+		}
+
+		if (cookie_ok == false)
+		{
+			UCHAR cookie[SHA1_SIZE];
+
+			IkeV2CalcCookie(ike, cookie, header, p);
+
+			IkeV2SendPlainNotifyResponse(ike, c, header, IKEV2_NOTIFY_COOKIE,
+				cookie, SHA1_SIZE);
+			return;
+		}
 	}
 
 	pr = IkeParse(p->Data, p->Size, NULL);
@@ -2699,6 +2847,10 @@ static bool IkeV2CheckMessageId(IKE_SERVER *ike, IKE_SA *sa, IKE_PACKET *header)
 	return false;
 }
 
+static void IkeV2ProcIkeSaRekey(IKE_SERVER *ike, IKE_PACKET *header, IKE_CLIENT *c, IKE_SA *sa,
+							   IKE_PACKET_PAYLOAD *sa_payload, IKE_PACKET_PAYLOAD *ke_payload,
+							   IKE_PACKET_PAYLOAD *nonce_payload);
+
 // Forward declarations of the IKE_AUTH sub handlers
 static void IkeV2ProcIkeAuthFirst(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, IKE_CLIENT *c, IKE_SA *sa);
 static void IkeV2ProcIkeAuthEapRound(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, IKE_CLIENT *c, IKE_SA *sa);
@@ -3429,6 +3581,10 @@ static void IkeV2EapFinalRound(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header
 		}
 	}
 
+	// Announce MOBIKE support (RFC 4555): the peer may then change its
+	// address with an INFORMATIONAL UPDATE_SA_ADDRESSES request
+	Add(payload_list, IkeV2NewNotifyPayload(0, IKEV2_NOTIFY_MOBIKE_SUPPORTED, NULL, 0, NULL, 0));
+
 	IkeV2SendEncryptedResponse(ike, sa, IKE_EXCHANGE_TYPE_IKE_AUTH, header->MessageId, payload_list);
 
 	IkeFreePayload(sa_payload);
@@ -3494,6 +3650,15 @@ void IkeV2ProcInformational(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, I
 
 	sa->V2MsgIdRecvExpected++;
 	sa->LastCommTick = ike->Now;
+
+	// MOBIKE address update (RFC 4555 section 3.3): the peer tells us it
+	// moved. The IKE_CLIENT endpoint is refreshed from the packet source
+	// during dispatch and the outbound ESP path uses the live client
+	// address, so an empty response completes the exchange
+	if (IkeV2GetNotifyPayload(header, IKEV2_NOTIFY_UPDATE_SA_ADDRESSES, 0) != NULL)
+	{
+		IPsecLog(ike, c, NULL, NULL, "LI2_MOBIKE_UPDATED");
+	}
 
 	// DELETE payload processing
 	delete_payload = IkeGetPayload(header->PayloadList, IKEV2_PAYLOAD_DELETE, 0);
@@ -3617,6 +3782,360 @@ void IkeV2ProcInformational(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, I
 
 //// CREATE_CHILD_SA
 
+// Derive the keys of a rekeyed IKE SA (RFC 7296 section 1.3.2):
+// SKEYSEED = prf(SK_d_old, g^ir_new | Ni | Nr), then the usual prf+ split
+static bool IkeV2CalcRekeyKeymat(IKE_SERVER *ike, IKE_SA *sa, IKE_SA *new_sa, void *g_ir, UINT g_ir_size)
+{
+	IKE_HASH *prf = sa->TransformSetting.V2Prf;
+	UINT prf_key_size, enc_key_size, integ_key_size;
+	UINT total, offset = 0;
+	UCHAR skeyseed[IKE_MAX_HASH_SIZE];
+	UCHAR keymat[IKE_MAX_HASH_SIZE * 2 + IKE_MAX_KEY_SIZE * 2 + IKE_MAX_HASH_SIZE * 2];
+	BUF *seed;
+	// Validate arguments
+	if (ike == NULL || sa == NULL || new_sa == NULL || g_ir == NULL || g_ir_size == 0 || prf == NULL)
+	{
+		return false;
+	}
+
+	prf_key_size = prf->HashSize;
+	enc_key_size = new_sa->TransformSetting.CryptoKeySize;
+	integ_key_size = new_sa->TransformSetting.Hash->HashSize;
+
+	total = prf_key_size + integ_key_size * 2 + enc_key_size * 2 + prf_key_size * 2;
+	if (total > sizeof(keymat))
+	{
+		return false;
+	}
+
+	// SKEYSEED = prf(SK_d, g^ir | Ni | Nr)
+	seed = NewBuf();
+	WriteBuf(seed, g_ir, g_ir_size);
+	WriteBufBuf(seed, new_sa->InitiatorRand);
+	WriteBufBuf(seed, new_sa->ResponderRand);
+
+	IkeHMac(prf, skeyseed, sa->V2SkD, prf_key_size, seed->Buf, seed->Size);
+
+	FreeBuf(seed);
+
+	// KEYMAT = prf+ (SKEYSEED, Ni | Nr | SPIi | SPIr)
+	seed = NewBuf();
+	WriteBufBuf(seed, new_sa->InitiatorRand);
+	WriteBufBuf(seed, new_sa->ResponderRand);
+	WriteBufInt64(seed, new_sa->InitiatorCookie);
+	WriteBufInt64(seed, new_sa->ResponderCookie);
+
+	IkeCalcPrfPlus(prf, skeyseed, prf_key_size, seed->Buf, seed->Size, keymat, total);
+
+	FreeBuf(seed);
+
+	Copy(new_sa->V2SkD, keymat + offset, prf_key_size);
+	offset += prf_key_size;
+	Copy(new_sa->V2SkAi, keymat + offset, integ_key_size);
+	offset += integ_key_size;
+	Copy(new_sa->V2SkAr, keymat + offset, integ_key_size);
+	offset += integ_key_size;
+	Copy(new_sa->V2SkEi, keymat + offset, enc_key_size);
+	offset += enc_key_size;
+	Copy(new_sa->V2SkEr, keymat + offset, enc_key_size);
+	offset += enc_key_size;
+	Copy(new_sa->V2SkPi, keymat + offset, prf_key_size);
+	offset += prf_key_size;
+	Copy(new_sa->V2SkPr, keymat + offset, prf_key_size);
+
+	new_sa->V2KeyEi = IkeNewKey(new_sa->TransformSetting.Crypto, new_sa->V2SkEi, enc_key_size);
+	new_sa->V2KeyEr = IkeNewKey(new_sa->TransformSetting.Crypto, new_sa->V2SkEr, enc_key_size);
+
+	Zero(skeyseed, sizeof(skeyseed));
+	Zero(keymat, sizeof(keymat));
+
+	if (new_sa->V2KeyEi == NULL || new_sa->V2KeyEr == NULL)
+	{
+		return false;
+	}
+
+	return true;
+}
+
+// Build the SA payload of an IKE SA rekey response: identical to the
+// initial response proposal except that it carries the 8 byte responder SPI
+static IKE_PACKET_PAYLOAD *IkeV2BuildIkeSaRekeyResponseProposal(IKE_SERVER *ike, IKE_SA_TRANSFORM_SETTING *setting, UINT64 responder_spi)
+{
+	LIST *transform_list;
+	UCHAR spi_be[8];
+	// Validate arguments
+	if (ike == NULL || setting == NULL)
+	{
+		return NULL;
+	}
+
+	transform_list = NewListFast(NULL);
+
+	if (setting->CryptoId == IKEV2_ENCR_AES_CBC)
+	{
+		IKEV2_TRANSFORM *t = IkeV2NewTransform(IKEV2_TRANSFORM_TYPE_ENCR, IKEV2_ENCR_AES_CBC);
+		Add(t->AttributeList, IkeV2NewTransformAttributeTv(IKEV2_SA_ATTR_KEY_LENGTH,
+			(USHORT)(setting->CryptoKeySize * 8)));
+		Add(transform_list, t);
+	}
+	else
+	{
+		Add(transform_list, IkeV2NewTransform(IKEV2_TRANSFORM_TYPE_ENCR, IKEV2_ENCR_3DES));
+	}
+
+	if (setting->V2Prf == GetIkeHash(ike->Engine, false, IKE_P1_HASH_SHA2_256))
+	{
+		Add(transform_list, IkeV2NewTransform(IKEV2_TRANSFORM_TYPE_PRF, IKEV2_PRF_HMAC_SHA2_256));
+	}
+	else if (setting->V2Prf == GetIkeHash(ike->Engine, false, IKE_P1_HASH_SHA1))
+	{
+		Add(transform_list, IkeV2NewTransform(IKEV2_TRANSFORM_TYPE_PRF, IKEV2_PRF_HMAC_SHA1));
+	}
+	else
+	{
+		Add(transform_list, IkeV2NewTransform(IKEV2_TRANSFORM_TYPE_PRF, IKEV2_PRF_HMAC_MD5));
+	}
+
+	Add(transform_list, IkeV2NewTransform(IKEV2_TRANSFORM_TYPE_INTEG, (USHORT)setting->V2IntegId));
+	Add(transform_list, IkeV2NewTransform(IKEV2_TRANSFORM_TYPE_DH, (USHORT)setting->DhId));
+
+	spi_be[0] = (UCHAR)((responder_spi >> 56) & 0xff);
+	spi_be[1] = (UCHAR)((responder_spi >> 48) & 0xff);
+	spi_be[2] = (UCHAR)((responder_spi >> 40) & 0xff);
+	spi_be[3] = (UCHAR)((responder_spi >> 32) & 0xff);
+	spi_be[4] = (UCHAR)((responder_spi >> 24) & 0xff);
+	spi_be[5] = (UCHAR)((responder_spi >> 16) & 0xff);
+	spi_be[6] = (UCHAR)((responder_spi >> 8) & 0xff);
+	spi_be[7] = (UCHAR)(responder_spi & 0xff);
+
+	return IkeV2NewSaPayload(NewListSingle(IkeV2NewProposal(1, IKE_PROTOCOL_ID_IKE,
+		spi_be, sizeof(spi_be), transform_list)));
+}
+
+// Process an IKE SA rekey request (CREATE_CHILD_SA carrying an IKE
+// proposal with KE and Ni, no traffic selectors, RFC 7296 section 1.3.2).
+// The new IKE SA derives its keys from the SK_d of the old one and takes
+// over the client; the old SA stays in place until the peer deletes it.
+static void IkeV2ProcIkeSaRekey(IKE_SERVER *ike, IKE_PACKET *header, IKE_CLIENT *c, IKE_SA *sa,
+								IKE_PACKET_PAYLOAD *sa_payload, IKE_PACKET_PAYLOAD *ke_payload,
+								IKE_PACKET_PAYLOAD *nonce_payload)
+{
+	IKEV2_PACKET_SA_PAYLOAD *sa_v2;
+	IKE_SA_TRANSFORM_SETTING setting;
+	USHORT ke_group = 0;
+	UCHAR *ke_data;
+	UINT ke_data_size;
+	DH_CTX *dh = NULL;
+	UCHAR *shared = NULL;
+	UINT shared_size = 0;
+	IKE_SA *new_sa = NULL;
+	BUF *nr = NULL;
+	LIST *payload_list = NULL;
+	UINT i;
+	bool has_ike_proposal = false;
+	bool has_spi = false;
+	UINT64 new_initiator_spi = 0;
+	// Validate arguments
+	if (ike == NULL || header == NULL || c == NULL || sa == NULL ||
+		sa_payload == NULL || ke_payload == NULL || nonce_payload == NULL)
+	{
+		return;
+	}
+
+	// The proposal must target the IKE protocol and carry the new SPI
+	sa_v2 = &sa_payload->Payload.SaV2;
+	for (i = 0; i < LIST_NUM(sa_v2->ProposalList); i++)
+	{
+		IKEV2_PROPOSAL *proposal = LIST_DATA(sa_v2->ProposalList, i);
+		if (proposal->ProtocolId == IKE_PROTOCOL_ID_IKE)
+		{
+			has_ike_proposal = true;
+			if (proposal->Spi != NULL && proposal->Spi->Size == 8)
+			{
+				Copy(&new_initiator_spi, proposal->Spi->Buf, 8);
+				new_initiator_spi = Endian64(new_initiator_spi);
+				has_spi = true;
+			}
+			break;
+		}
+	}
+
+	if (has_ike_proposal == false || has_spi == false)
+	{
+		IkeV2SendEncryptedNotify(ike, sa, IKE_EXCHANGE_TYPE_CREATE_CHILD_SA, header->MessageId,
+			IKEV2_NOTIFY_INVALID_SYNTAX, NULL, 0);
+		return;
+	}
+
+	// Select the IKE proposal (same preference table as the initial handshake)
+	Zero(&setting, sizeof(setting));
+	if (IkeV2SelectIkeSaProposal(ike, sa_payload, &setting, NULL) == false)
+	{
+		IkeV2SendEncryptedNotify(ike, sa, IKE_EXCHANGE_TYPE_CREATE_CHILD_SA, header->MessageId,
+			IKEV2_NOTIFY_NO_PROPOSAL_CHOSEN, NULL, 0);
+		return;
+	}
+
+	// KE payload: group number, two reserved bytes, then the public value
+	{
+		BUF *ke_body = ke_payload->Payload.GeneralData.Data;
+
+		if (ke_body == NULL || ke_body->Size < 6)
+		{
+			IkeV2SendEncryptedNotify(ike, sa, IKE_EXCHANGE_TYPE_CREATE_CHILD_SA, header->MessageId,
+				IKEV2_NOTIFY_INVALID_SYNTAX, NULL, 0);
+			return;
+		}
+
+		ke_group = (USHORT)(((USHORT)((UCHAR *)ke_body->Buf)[0] << 8) | (USHORT)((UCHAR *)ke_body->Buf)[1]);
+		ke_data = (UCHAR *)ke_body->Buf + 4;
+		ke_data_size = ke_body->Size - 4;
+	}
+
+	if (ke_group != (USHORT)setting.DhId)
+	{
+		USHORT our_group = (USHORT)setting.DhId;
+		UCHAR data_be[2];
+
+		data_be[0] = (UCHAR)((our_group >> 8) & 0xff);
+		data_be[1] = (UCHAR)(our_group & 0xff);
+
+		IkeV2SendEncryptedNotify(ike, sa, IKE_EXCHANGE_TYPE_CREATE_CHILD_SA, header->MessageId,
+			IKEV2_NOTIFY_INVALID_KE_PAYLOAD, data_be, sizeof(data_be));
+		return;
+	}
+
+	// Nonce: 16 to 256 octets (RFC 7296 section 3.9)
+	{
+		BUF *nonce_body = nonce_payload->Payload.GeneralData.Data;
+
+		if (nonce_body == NULL || nonce_body->Size < 16 || nonce_body->Size > 256)
+		{
+			IkeV2SendEncryptedNotify(ike, sa, IKE_EXCHANGE_TYPE_CREATE_CHILD_SA, header->MessageId,
+				IKEV2_NOTIFY_INVALID_SYNTAX, NULL, 0);
+			return;
+		}
+	}
+
+	// SA quota
+	if (GetNumberOfIkeSaOfIkeClient(ike, c) > IKE_QUOTA_MAX_SA_PER_CLIENT)
+	{
+		IkeV2SendEncryptedNotify(ike, sa, IKE_EXCHANGE_TYPE_CREATE_CHILD_SA, header->MessageId,
+			IKEV2_NOTIFY_NO_ADDITIONAL_SAS, NULL, 0);
+		return;
+	}
+
+	// DH computation with the fresh ephemeral keys
+	dh = IkeDhNewCtx(setting.Dh);
+	if (dh == NULL)
+	{
+		IkeV2SendEncryptedNotify(ike, sa, IKE_EXCHANGE_TYPE_CREATE_CHILD_SA, header->MessageId,
+			IKEV2_NOTIFY_INVALID_SYNTAX, NULL, 0);
+		return;
+	}
+
+	shared_size = dh->Size;
+	shared = ZeroMalloc(shared_size);
+	if (DhCompute(dh, shared, ke_data, ke_data_size) == false)
+	{
+		IPsecLog(ike, c, sa, NULL, "LI_QM_DH_ERROR");
+		Free(shared);
+		DhFree(dh);
+		IkeV2SendEncryptedNotify(ike, sa, IKE_EXCHANGE_TYPE_CREATE_CHILD_SA, header->MessageId,
+			IKEV2_NOTIFY_INVALID_SYNTAX, NULL, 0);
+		return;
+	}
+
+	// Create the new IKE SA with the initiator SPI from the proposal
+	new_sa = NewIkeSa(ike, c, new_initiator_spi, IKEV2_SA_MODE_NONE, &setting);
+	if (new_sa == NULL)
+	{
+		Free(shared);
+		DhFree(dh);
+		IkeV2SendEncryptedNotify(ike, sa, IKE_EXCHANGE_TYPE_CREATE_CHILD_SA, header->MessageId,
+			IKEV2_NOTIFY_NO_ADDITIONAL_SAS, NULL, 0);
+		return;
+	}
+	new_sa->MajorVersion = IKE_MAJOR_VERSION_2;
+
+	new_sa->InitiatorRand = CloneBuf(nonce_payload->Payload.GeneralData.Data);
+	nr = RandBuf(IKEV2_NONCE_SIZE);
+	new_sa->ResponderRand = CloneBuf(nr);
+	new_sa->DhSharedKey = MemToBuf(shared, shared_size);
+
+	if (IkeV2CalcRekeyKeymat(ike, sa, new_sa, shared, shared_size) == false)
+	{
+		FreeBuf(nr);
+		Free(shared);
+		DhFree(dh);
+		FreeIkeSa(new_sa);
+		IkeV2SendEncryptedNotify(ike, sa, IKE_EXCHANGE_TYPE_CREATE_CHILD_SA, header->MessageId,
+			IKEV2_NOTIFY_NO_ADDITIONAL_SAS, NULL, 0);
+		return;
+	}
+
+	// Response payload order: SA(r with new SPIr), KEr, Nr (must be built
+	// before the DH context is released: the KEr carries our public key)
+	payload_list = NewListFast(NULL);
+
+	Add(payload_list, IkeV2BuildIkeSaRekeyResponseProposal(ike, &setting, new_sa->ResponderCookie));
+
+	{
+		BUF *ke_buf = NewBuf();
+		UCHAR group_be[4];
+		UINT pad_size;
+		UCHAR *pad;
+
+		Zero(group_be, sizeof(group_be));
+		group_be[0] = (UCHAR)((ke_group >> 8) & 0xff);
+		group_be[1] = (UCHAR)(ke_group & 0xff);
+		WriteBuf(ke_buf, group_be, sizeof(group_be));
+
+		// Zero pad the public key on the left to the exact group size
+		pad_size = (dh->MyPublicKey->Size < dh->Size) ? (dh->Size - dh->MyPublicKey->Size) : 0;
+		pad = pad_size >= 1 ? ZeroMalloc(pad_size) : NULL;
+
+		if (pad != NULL)
+		{
+			WriteBuf(ke_buf, pad, pad_size);
+			Free(pad);
+		}
+
+		WriteBuf(ke_buf, dh->MyPublicKey->Buf, dh->MyPublicKey->Size);
+
+		Add(payload_list, IkeNewDataPayload(IKEV2_PAYLOAD_KEY_EXCHANGE, ke_buf->Buf, ke_buf->Size));
+
+		FreeBuf(ke_buf);
+	}
+
+	Add(payload_list, IkeNewDataPayload(IKEV2_PAYLOAD_NONCE, nr->Buf, nr->Size));
+
+	// The new IKE SA is established immediately (RFC 7296 section 2.8.2):
+	// the existing Child SAs keep working and its message ID space is fresh
+	new_sa->V2State = IKEV2_STATE_ESTABLISHED;
+	new_sa->Established = true;
+	new_sa->EstablishedTick = ike->Now;
+	new_sa->V2MsgIdRecvExpected = 1;
+	new_sa->V2MsgIdSendNext = 1;
+	new_sa->V2NatDetected = sa->V2NatDetected;
+	StrCpy(new_sa->Secret, sizeof(new_sa->Secret), sa->Secret);
+
+	Insert(ike->IkeSaList, new_sa);
+
+	// Hand the client over to the new IKE SA
+	c->CurrentIkeSa = new_sa;
+
+	// Encrypted with the OLD IKE SA keys, as the rekey exchange belongs to it
+	IkeV2SendEncryptedResponse(ike, sa, IKE_EXCHANGE_TYPE_CREATE_CHILD_SA, header->MessageId, payload_list);
+
+	Free(shared);
+	DhFree(dh);
+	FreeBuf(nr);
+
+	IPsecLog(ike, c, new_sa, NULL, "LI2_IKE_SA_REKEYED",
+		sa->InitiatorCookie, sa->ResponderCookie, new_sa->ResponderCookie, 0, 0);
+}
+
 // Process a CREATE_CHILD_SA request. Child SA rekeying (RFC 7296
 // section 2.8.1) is supported: the peer identifies the old Child SA with a
 // REKEY_SA notify and proposes a new SA; the keys are re-derived from SK_d
@@ -3658,6 +4177,32 @@ void IkeV2ProcCreateChildSa(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, I
 
 	if (rekey_notify == NULL)
 	{
+		// An IKE SA rekey carries an IKE proposal (with the new SPI) and no
+		// traffic selectors (RFC 7296 section 1.3.2 / 2.8.2)
+		if (sa_payload != NULL && ke_payload != NULL && nonce_payload != NULL &&
+			tsi_payload == NULL && tsr_payload == NULL)
+		{
+			IKEV2_PACKET_SA_PAYLOAD *sa_v2 = &sa_payload->Payload.SaV2;
+			UINT i;
+			bool is_ike = false;
+
+			for (i = 0; i < LIST_NUM(sa_v2->ProposalList); i++)
+			{
+				IKEV2_PROPOSAL *proposal = LIST_DATA(sa_v2->ProposalList, i);
+				if (proposal->ProtocolId == IKE_PROTOCOL_ID_IKE)
+				{
+					is_ike = true;
+					break;
+				}
+			}
+
+			if (is_ike)
+			{
+				IkeV2ProcIkeSaRekey(ike, header, c, sa, sa_payload, ke_payload, nonce_payload);
+				return;
+			}
+		}
+
 		// A request for an additional Child SA: not supported in this phase
 		IPsecLog(ike, c, sa, NULL, "LI2_CREATE_CHILD_SA_REJECTED");
 

@@ -5410,6 +5410,14 @@ void ProcessIKEInterrupts(IKE_SERVER *ike)
 	{
 		IKE_SA *sa = LIST_DATA(ike->IkeSaList, i);
 
+		// IKEv2: the cached last response is resent only when the peer
+		// actually retransmits its request (handled by the message id gate);
+		// proactive retransmission would flood the peer with stale messages
+		if (sa->MajorVersion == IKE_MAJOR_VERSION_2)
+		{
+			continue;
+		}
+
 		if (sa->SendBuffer != NULL)
 		{
 			if (ike->Now >= sa->NextSendTick)
