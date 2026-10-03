@@ -42,9 +42,10 @@ BUF *IkeV2CalcChildSaKeymat(IKE_SERVER *ike, IKE_SA *sa, UINT keymat_size);
 
 // Authentication (RFC 7296 section 2.15)
 BUF *IkeV2CalcSignedOctets(IKE_SA *sa, BUF *real_message, BUF *nonce, void *skp, UINT skp_size, BUF *id_body);
-bool IkeV2VerifyInitiatorAuth(IKE_SERVER *ike, IKE_SA *sa, IKE_PACKET_PAYLOAD *auth_payload);
-IKE_PACKET_PAYLOAD *IkeV2BuildPskAuth(IKE_SERVER *ike, IKE_SA *sa, BUF *real_message, BUF *nonce,
-									  void *skp, UINT skp_size, BUF *id_body);
+bool IkeV2VerifyInitiatorAuthSecret(IKE_SERVER *ike, IKE_SA *sa, IKE_PACKET_PAYLOAD *auth_payload,
+									void *secret, UINT secret_size);
+IKE_PACKET_PAYLOAD *IkeV2BuildAuthSecret(IKE_SERVER *ike, IKE_SA *sa, void *secret, UINT secret_size,
+										 BUF *real_message, BUF *nonce, void *skp, UINT skp_size, BUF *id_body);
 
 // Proposal selection
 bool IkeV2SelectIkeSaProposal(IKE_SERVER *ike, IKE_PACKET_PAYLOAD *sa_payload,

@@ -28,12 +28,17 @@
 
 #include "Proto_IKEv2.h"
 
+#include "Account.h"
 #include "Cedar.h"
+#include "Hub.h"
+#include "IPC.h"
 #include "Logging.h"
 #include "Proto_IPsec.h"
+#include "Proto_PPP.h"
 #include "Server.h"
 
 #include "Mayaqua/Memory.h"
+#include "Mayaqua/Object.h"
 #include "Mayaqua/Str.h"
 #include "Mayaqua/Table.h"
 #include "Mayaqua/TcpIp.h"
@@ -727,8 +732,9 @@ BUF *IkeV2CalcSignedOctets(IKE_SA *sa, BUF *real_message, BUF *nonce, void *skp,
 	return b;
 }
 
-// Verify the AUTH payload of the initiator (PSK method)
-bool IkeV2VerifyInitiatorAuth(IKE_SERVER *ike, IKE_SA *sa, IKE_PACKET_PAYLOAD *auth_payload)
+// Verify the AUTH payload of the initiator (shared key / MSK method)
+bool IkeV2VerifyInitiatorAuthSecret(IKE_SERVER *ike, IKE_SA *sa, IKE_PACKET_PAYLOAD *auth_payload,
+									void *secret, UINT secret_size)
 {
 	bool ret = false;
 	IKE_HASH *prf;
@@ -738,7 +744,7 @@ bool IkeV2VerifyInitiatorAuth(IKE_SERVER *ike, IKE_SA *sa, IKE_PACKET_PAYLOAD *a
 	BUF *octets = NULL;
 	IKEV2_PACKET_AUTH_PAYLOAD *auth;
 	// Validate arguments
-	if (ike == NULL || sa == NULL || auth_payload == NULL)
+	if (ike == NULL || sa == NULL || auth_payload == NULL || secret == NULL || secret_size == 0)
 	{
 		return false;
 	}
@@ -750,7 +756,7 @@ bool IkeV2VerifyInitiatorAuth(IKE_SERVER *ike, IKE_SA *sa, IKE_PACKET_PAYLOAD *a
 
 	auth = &auth_payload->Payload.AuthV2;
 
-	// Only the pre-shared key method is supported in this phase
+	// Only the shared key message integrity code method is supported in this phase
 	if (auth->Method != IKEV2_AUTH_METHOD_PSK)
 	{
 		return false;
@@ -764,8 +770,8 @@ bool IkeV2VerifyInitiatorAuth(IKE_SERVER *ike, IKE_SA *sa, IKE_PACKET_PAYLOAD *a
 		return false;
 	}
 
-	// psk_key = prf(PSK, "Key Pad for IKEv2")
-	IkeHMac(prf, psk_key, ike->Secret, StrLen(ike->Secret),
+	// psk_key = prf(secret, "Key Pad for IKEv2")
+	IkeHMac(prf, psk_key, secret, secret_size,
 		IKEV2_KEY_PAD_STRING, StrLen(IKEV2_KEY_PAD_STRING));
 
 	// Signed octets of the initiator: the whole IKE_SA_INIT request,
@@ -788,9 +794,9 @@ bool IkeV2VerifyInitiatorAuth(IKE_SERVER *ike, IKE_SA *sa, IKE_PACKET_PAYLOAD *a
 	return ret;
 }
 
-// Build our own PSK AUTH payload
-IKE_PACKET_PAYLOAD *IkeV2BuildPskAuth(IKE_SERVER *ike, IKE_SA *sa, BUF *real_message, BUF *nonce,
-									  void *skp, UINT skp_size, BUF *id_body)
+// Build our own AUTH payload with an arbitrary secret (PSK or EAP MSK)
+IKE_PACKET_PAYLOAD *IkeV2BuildAuthSecret(IKE_SERVER *ike, IKE_SA *sa, void *secret, UINT secret_size,
+										 BUF *real_message, BUF *nonce, void *skp, UINT skp_size, BUF *id_body)
 {
 	IKE_HASH *prf;
 	UCHAR psk_key[IKE_MAX_HASH_SIZE];
@@ -799,7 +805,8 @@ IKE_PACKET_PAYLOAD *IkeV2BuildPskAuth(IKE_SERVER *ike, IKE_SA *sa, BUF *real_mes
 	BUF *octets;
 	IKE_PACKET_PAYLOAD *ret = NULL;
 	// Validate arguments
-	if (ike == NULL || sa == NULL || real_message == NULL || nonce == NULL || id_body == NULL)
+	if (ike == NULL || sa == NULL || secret == NULL || secret_size == 0 ||
+		real_message == NULL || nonce == NULL || id_body == NULL)
 	{
 		return NULL;
 	}
@@ -807,8 +814,8 @@ IKE_PACKET_PAYLOAD *IkeV2BuildPskAuth(IKE_SERVER *ike, IKE_SA *sa, BUF *real_mes
 	prf = sa->TransformSetting.V2Prf;
 	prf_key_size = prf->HashSize;
 
-	// psk_key = prf(PSK, "Key Pad for IKEv2")
-	IkeHMac(prf, psk_key, ike->Secret, StrLen(ike->Secret),
+	// psk_key = prf(secret, "Key Pad for IKEv2")
+	IkeHMac(prf, psk_key, secret, secret_size,
 		IKEV2_KEY_PAD_STRING, StrLen(IKEV2_KEY_PAD_STRING));
 
 	// Signed octets of the responder: the whole IKE_SA_INIT response,
@@ -1701,28 +1708,690 @@ void IkeV2SendPlainNotifyResponse(IKE_SERVER *ike, IKE_CLIENT *c, IKE_PACKET *he
 	FreeBuf(buf);
 }
 
+//// EAP (RFC 3748) and EAP-MSCHAPv2 helpers
+
+// Parse a complete EAP message from the payload data.
+// Returns the code, the identifier and, for typed messages, the type and
+// the type data as a newly allocated BUF.
+static bool IkeV2ParseEapMessage(BUF *data, UCHAR *code, UCHAR *id, UCHAR *type, BUF **type_data)
+{
+	UCHAR *dp;
+	UINT len;
+	// Validate arguments
+	if (data == NULL || data->Size < 4 || code == NULL || id == NULL || type == NULL || type_data == NULL)
+	{
+		return false;
+	}
+
+	dp = (UCHAR *)data->Buf;
+	len = ((UINT)dp[2] << 8) | (UINT)dp[3];
+
+	if (len < 4 || len > data->Size)
+	{
+		return false;
+	}
+
+	*code = dp[0];
+	*id = dp[1];
+
+	if (len >= 5)
+	{
+		*type = dp[4];
+		*type_data = MemToBuf(dp + 5, len - 5);
+	}
+	else
+	{
+		*type = 0;
+		*type_data = NULL;
+	}
+
+	return true;
+}
+
+// Build an EAP payload. Pass type 0 for a code-only message (Success / Failure)
+static IKE_PACKET_PAYLOAD *IkeV2NewEapPayload(UCHAR code, UCHAR id, UCHAR type, void *type_data, UINT type_data_size)
+{
+	BUF *b;
+	UCHAR hdr[4];
+	UINT len = 4 + (type != 0 ? 1 + type_data_size : 0);
+	IKE_PACKET_PAYLOAD *ret;
+
+	hdr[0] = code;
+	hdr[1] = id;
+	hdr[2] = (UCHAR)((len >> 8) & 0xff);
+	hdr[3] = (UCHAR)(len & 0xff);
+
+	b = NewBuf();
+	WriteBuf(b, hdr, sizeof(hdr));
+
+	if (type != 0)
+	{
+		UCHAR t = type;
+		WriteBuf(b, &t, 1);
+
+		if (type_data != NULL && type_data_size != 0)
+		{
+			WriteBuf(b, type_data, type_data_size);
+		}
+	}
+
+	ret = IkeNewDataPayload(IKEV2_PAYLOAD_EAP, b->Buf, b->Size);
+
+	FreeBuf(b);
+
+	return ret;
+}
+
+// Build an EAP-MSCHAPv2 Challenge request (OpCode 1)
+static IKE_PACKET_PAYLOAD *IkeV2NewEapMschapV2Challenge(UCHAR eap_id, UCHAR mschap_id, UCHAR *challenge16, char *name)
+{
+	BUF *ms = NewBuf();
+	UCHAR head[5];
+	UINT ms_len = 4 + 1 + IKEV2_MSCHAPV2_CHALLENGE_SIZE + StrLen(name);
+	IKE_PACKET_PAYLOAD *ret;
+
+	head[0] = 1;	// OpCode: Challenge
+	head[1] = mschap_id;
+	head[2] = (UCHAR)((ms_len >> 8) & 0xff);
+	head[3] = (UCHAR)(ms_len & 0xff);
+	head[4] = IKEV2_MSCHAPV2_CHALLENGE_SIZE;
+
+	WriteBuf(ms, head, sizeof(head));
+	WriteBuf(ms, challenge16, IKEV2_MSCHAPV2_CHALLENGE_SIZE);
+	WriteBuf(ms, name, StrLen(name));
+
+	ret = IkeV2NewEapPayload(IKEV2_EAP_CODE_REQUEST, eap_id, IKEV2_EAP_TYPE_MSCHAPV2, ms->Buf, ms->Size);
+
+	FreeBuf(ms);
+
+	return ret;
+}
+
+// Build an EAP-MSCHAPv2 Success request (OpCode 3) carrying the S= string
+static IKE_PACKET_PAYLOAD *IkeV2NewEapMschapV2Success(UCHAR eap_id, UCHAR mschap_id, UCHAR *server_response_20)
+{
+	char hex[IKEV2_MSCHAPV2_S_RESPONSE_SIZE * 2 + 1];
+	char msg[MAX_SIZE * 2];
+	BUF *ms = NewBuf();
+	UCHAR head[4];
+	UINT ms_len;
+	IKE_PACKET_PAYLOAD *ret;
+
+	BinToStr(hex, sizeof(hex), server_response_20, IKEV2_MSCHAPV2_S_RESPONSE_SIZE);
+	Format(msg, sizeof(msg), "S=%s M=Welcome", hex);
+
+	ms_len = 4 + StrLen(msg);
+
+	head[0] = 3;	// OpCode: Success
+	head[1] = mschap_id;
+	head[2] = (UCHAR)((ms_len >> 8) & 0xff);
+	head[3] = (UCHAR)(ms_len & 0xff);
+
+	WriteBuf(ms, head, sizeof(head));
+	WriteBuf(ms, msg, StrLen(msg));
+
+	ret = IkeV2NewEapPayload(IKEV2_EAP_CODE_REQUEST, eap_id, IKEV2_EAP_TYPE_MSCHAPV2, ms->Buf, ms->Size);
+
+	FreeBuf(ms);
+
+	return ret;
+}
+
+// Parse an EAP-MSCHAPv2 Response (OpCode 2):
+//   MsChapId(1) MsLength(2) ValueSize(1)=49 PeerChallenge(16) Reserved(8)
+//   NTResponse(24) Flags(1) Name(...)
+static bool IkeV2ParseEapMschapV2Response(BUF *type_data, UCHAR *peer_challenge, UCHAR *nt_response,
+										  char *name, UINT name_size)
+{
+	UCHAR *d;
+	UINT pos;
+	UINT name_len;
+	// Validate arguments
+	if (type_data == NULL || type_data->Size < 5 + 1 + 49 || peer_challenge == NULL ||
+		nt_response == NULL || name == NULL)
+	{
+		return false;
+	}
+
+	d = (UCHAR *)type_data->Buf;
+
+	if (d[0] != 2)	// OpCode: Response
+	{
+		return false;
+	}
+
+	pos = 4;
+
+	if (d[pos] != 49)
+	{
+		return false;
+	}
+	pos++;
+
+	Copy(peer_challenge, d + pos, 16);
+	pos += 16;
+	pos += 8;	// Reserved
+	Copy(nt_response, d + pos, IKEV2_MSCHAPV2_NT_RESPONSE_SIZE);
+	pos += IKEV2_MSCHAPV2_NT_RESPONSE_SIZE;
+	pos += 1;	// Flags
+
+	name_len = type_data->Size - pos;
+	if (name_len >= name_size)
+	{
+		name_len = name_size - 1;
+	}
+
+	Copy(name, d + pos, name_len);
+	name[name_len] = 0;
+
+	return true;
+}
+
+// Derive the 64 byte EAP MSK from the MSCHAPv2 exchange (RFC 3079 section 3.3).
+// The layout matches the strongSwan implementation: two 16 byte keys followed
+// by 32 zero bytes.
+static void IkeV2CalcMskFromMsChapV2(UCHAR *nt_hash_hash, UCHAR *nt_response, UCHAR *msk64)
+{
+	char *magic1 = "This is the MPPE Master Key";
+	char *magic2 = "On the client side, this is the send key; on the server side, it is the receive key.";
+	char *magic3 = "On the client side, this is the receive key; on the server side, it is the send key.";
+	UCHAR shapad1[40];
+	UCHAR shapad2[40];
+	UCHAR master[SHA1_SIZE];
+	BUF *b;
+	UCHAR i;
+
+	Zero(shapad1, sizeof(shapad1));
+	for (i = 0; i < sizeof(shapad2); i++)
+	{
+		shapad2[i] = 0xF2;
+	}
+
+	// MasterKey = SHA1(PasswordHashHash || NTResponse || magic1)[0..15]
+	b = NewBuf();
+	WriteBuf(b, nt_hash_hash, 16);
+	WriteBuf(b, nt_response, IKEV2_MSCHAPV2_NT_RESPONSE_SIZE);
+	WriteBuf(b, magic1, StrLen(magic1));
+	Sha1(master, b->Buf, b->Size);
+	FreeBuf(b);
+
+	// First key with magic2
+	b = NewBuf();
+	WriteBuf(b, master, 16);
+	WriteBuf(b, shapad1, sizeof(shapad1));
+	WriteBuf(b, magic2, StrLen(magic2));
+	WriteBuf(b, shapad2, sizeof(shapad2));
+	Sha1(msk64 + 0, b->Buf, b->Size);
+	FreeBuf(b);
+
+	// Second key with magic3
+	b = NewBuf();
+	WriteBuf(b, master, 16);
+	WriteBuf(b, shapad1, sizeof(shapad1));
+	WriteBuf(b, magic3, StrLen(magic3));
+	WriteBuf(b, shapad2, sizeof(shapad2));
+	Sha1(msk64 + 16, b->Buf, b->Size);
+	FreeBuf(b);
+
+	// 32 bytes of zero padding
+	Zero(msk64 + 32, 32);
+}
+
+// Verify an MSCHAPv2 NT-Response against the user database of the target
+// virtual hub and derive the material needed for the EAP MSK
+static bool IkeV2MsChapV2VerifyHubUser(IKE_SERVER *ike, char *username,
+									   UCHAR *server_challenge, UCHAR *peer_challenge, UCHAR *nt_response,
+									   UCHAR *nt_hash_hash, UCHAR *server_response_20)
+{
+	ETHERIP_ID d;
+	HUB *hub;
+	USER *u;
+	bool ok = false;
+	UCHAR challenge8[8];
+	UCHAR expected[IKEV2_MSCHAPV2_NT_RESPONSE_SIZE];
+	// Validate arguments
+	if (ike == NULL || ike->Cedar == NULL || username == NULL || server_challenge == NULL ||
+		peer_challenge == NULL || nt_response == NULL || nt_hash_hash == NULL || server_response_20 == NULL)
+	{
+		return false;
+	}
+
+	Zero(&d, sizeof(d));
+
+	// Resolve "user@hub" with the IPsec default hub fallback
+	PPPParseUsername(ike->Cedar, username, &d);
+
+	if (IsEmptyStr(d.UserName))
+	{
+		return false;
+	}
+
+	hub = GetHub(ike->Cedar, d.HubName);
+
+	if (hub == NULL)
+	{
+		return false;
+	}
+
+	AcLock(hub);
+	{
+		u = AcGetUser(hub, d.UserName);
+
+		if (u != NULL)
+		{
+			Lock(u->lock);
+			{
+				if (u->AuthType == AUTHTYPE_PASSWORD)
+				{
+					AUTHPASSWORD *auth = (AUTHPASSWORD *)u->AuthData;
+
+					if (IsZero(auth->NtLmSecureHash, MD5_SIZE) == false)
+					{
+						MsChapV2_GenerateChallenge8(challenge8, peer_challenge, server_challenge, username);
+						MsChapV2Client_GenerateResponse(expected, challenge8, auth->NtLmSecureHash);
+
+						if (Cmp(expected, nt_response, IKEV2_MSCHAPV2_NT_RESPONSE_SIZE) == 0)
+						{
+							// The response matches: derive the MSK material
+							GenerateNtPasswordHashHash(nt_hash_hash, auth->NtLmSecureHash);
+							MsChapV2Server_GenerateResponse(server_response_20, nt_hash_hash, nt_response, challenge8);
+
+							ok = true;
+						}
+					}
+				}
+			}
+			Unlock(u->lock);
+
+			ReleaseUser(u);
+		}
+	}
+	AcUnlock(hub);
+
+	ReleaseHub(hub);
+
+	return ok;
+}
+
+// Start the asynchronous IPC connection into the virtual hub. The IPC login
+// itself re-verifies the MSCHAPv2 response via the tagged password and the
+// background thread additionally requests a virtual IP via DHCP (L3 mode).
+static IPC_ASYNC *IkeV2NewIpcAsync(IKE_SERVER *ike, IKE_CLIENT *c, char *username_full,
+								   UCHAR *server_challenge, UCHAR *peer_challenge, UCHAR *nt_response)
+{
+	IPC_PARAM param;
+	ETHERIP_ID d;
+	char password[MAX_PASSWORD_LEN + 8];
+	char sc_hex[64], pc_hex[64], nt_hex[64], eap_hex[32];
+	UINT64 eap_client_ptr = 0;
+	// Validate arguments
+	if (ike == NULL || c == NULL || username_full == NULL || server_challenge == NULL ||
+		peer_challenge == NULL || nt_response == NULL)
+	{
+		return NULL;
+	}
+
+	Zero(&param, sizeof(param));
+	Zero(&d, sizeof(d));
+
+	PPPParseUsername(ike->Cedar, username_full, &d);
+
+	// Build the MSCHAPv2 tagged password consumed by the in-proc login
+	BinToStr(sc_hex, sizeof(sc_hex), server_challenge, IKEV2_MSCHAPV2_CHALLENGE_SIZE);
+	BinToStr(pc_hex, sizeof(pc_hex), peer_challenge, IKEV2_MSCHAPV2_CHALLENGE_SIZE);
+	BinToStr(nt_hex, sizeof(nt_hex), nt_response, IKEV2_MSCHAPV2_NT_RESPONSE_SIZE);
+	BinToStr(eap_hex, sizeof(eap_hex), &eap_client_ptr, 8);
+
+	Format(password, sizeof(password), "%s%s:%s:%s:%s:%s",
+		IPC_PASSWORD_MSCHAPV2_TAG, username_full, sc_hex, pc_hex, nt_hex, eap_hex);
+
+	StrCpy(param.ClientName, sizeof(param.ClientName), "IKEv2");
+	StrCpy(param.Postfix, sizeof(param.Postfix), IKEV2_IPC_POSTFIX);
+	StrCpy(param.HubName, sizeof(param.HubName), d.HubName);
+	StrCpy(param.UserName, sizeof(param.UserName), d.UserName);
+	StrCpy(param.Password, sizeof(param.Password), password);
+
+	Copy(&param.ClientIp, &c->ClientIP, sizeof(IP));
+	param.ClientPort = c->ClientPort;
+	Copy(&param.ServerIp, &c->ServerIP, sizeof(IP));
+	param.ServerPort = c->ServerPort;
+
+	StrCpy(param.ClientHostname, sizeof(param.ClientHostname), "IKEv2 Client");
+	StrCpy(param.CryptName, sizeof(param.CryptName), "IPsec (IKEv2)");
+
+	param.Layer = IPC_LAYER_3;
+	param.IsL3Mode = true;
+	param.Mss = IKEV2_IPC_MSS;
+
+	return NewIPCAsync(ike->Cedar, &param, ike->SockEvent);
+}
+
+// Wait (bounded) for the asynchronous IPC login and DHCP to complete
+static IPC *IkeV2WaitIpcReady(IKE_CLIENT *c)
+{
+	UINT64 giveup = Tick64() + 4000;
+	// Validate arguments
+	if (c == NULL || c->V2IpcAsync == NULL)
+	{
+		return NULL;
+	}
+
+	while (c->V2IpcAsync->Done == false && Tick64() < giveup)
+	{
+		Sleep(25);
+	}
+
+	if (c->V2IpcAsync->Done && c->V2IpcAsync->Ipc != NULL)
+	{
+		return c->V2IpcAsync->Ipc;
+	}
+
+	return NULL;
+}
+
+// Build the CP (Configuration) reply payload carrying the virtual address
+// obtained from the DHCP server of the hub
+static IKE_PACKET_PAYLOAD *IkeV2NewCpReplyPayload(IPC_ASYNC *a)
+{
+	LIST *attrs;
+	UCHAR v4[4];
+	// Validate arguments
+	if (a == NULL || a->Ipc == NULL || a->L3ClientAddressOption.ClientAddress == 0)
+	{
+		return NULL;
+	}
+
+	attrs = NewListFast(NULL);
+
+	// The DHCP option list stores the addresses in network byte order in
+	// memory (the same convention as UINTToIP): copy the raw bytes
+	Copy(v4, &a->L3ClientAddressOption.ClientAddress, 4);
+	Add(attrs, IkeV2NewCpAttribute(IKEV2_CP_ATTR_INTERNAL_IP4_ADDRESS, v4, 4));
+
+	// Note: the INTERNAL_IP4_NETMASK attribute is deliberately not sent:
+	// strongSwan rejects it and modern clients derive the prefix from the
+	// subnet of the assigned address or use their own policy
+
+	if (a->L3ClientAddressOption.DnsServer != 0)
+	{
+		Copy(v4, &a->L3ClientAddressOption.DnsServer, 4);
+		Add(attrs, IkeV2NewCpAttribute(IKEV2_CP_ATTR_INTERNAL_IP4_DNS, v4, 4));
+	}
+
+	if (a->L3ClientAddressOption.DnsServer2 != 0)
+	{
+		Copy(v4, &a->L3ClientAddressOption.DnsServer2, 4);
+		Add(attrs, IkeV2NewCpAttribute(IKEV2_CP_ATTR_INTERNAL_IP4_DNS, v4, 4));
+	}
+
+	return IkeV2NewCpPayload(IKEV2_CP_CFG_REPLY, attrs);
+}
+
+// Build the IDr payload body: our own address (same on every IKE_AUTH response)
+static BUF *IkeV2BuildIdrBody(IKE_SERVER *ike, IKE_CLIENT *c, UCHAR *idr_type)
+{
+	UCHAR addr[16];
+	UINT addr_size;
+	BUF *idr_body;
+
+	Zero(addr, sizeof(addr));
+
+	if (IsIP6(&c->ServerIP))
+	{
+		Copy(addr, c->ServerIP.address, 16);
+		addr_size = 16;
+		*idr_type = IKE_ID_IPV6_ADDR;
+	}
+	else
+	{
+		Copy(addr, IPV4(c->ServerIP.address), IPV4_SIZE);
+		addr_size = IPV4_SIZE;
+		*idr_type = IKE_ID_IPV4_ADDR;
+	}
+
+	idr_body = NewBuf();
+	{
+		UCHAR id_header[4];
+		Zero(id_header, sizeof(id_header));
+		id_header[0] = *idr_type;
+		WriteBuf(idr_body, id_header, sizeof(id_header));
+		WriteBuf(idr_body, addr, addr_size);
+	}
+
+	return idr_body;
+}
+
+// Create both directions of the first Child SA. On success the SAs are
+// inserted into the server lists and paired.
+static bool IkeV2CreateChildSaPair(IKE_SERVER *ike, IKE_CLIENT *c, IKE_SA *sa,
+									IKE_PACKET_PAYLOAD *sa_payload, IPSEC_SA_TRANSFORM_SETTING *child_setting,
+									UINT *our_spi, IPSECSA **sa_c_out, IPSECSA **sa_s_out)
+{
+	UINT client_spi = 0;
+	UCHAR zero_iv[IKE_MAX_BLOCK_SIZE];
+	IPSECSA *sa_c = NULL, *sa_s = NULL;
+	// Validate arguments
+	if (ike == NULL || c == NULL || sa == NULL || sa_payload == NULL || child_setting == NULL ||
+		our_spi == NULL || sa_c_out == NULL || sa_s_out == NULL)
+	{
+		return false;
+	}
+
+	Zero(child_setting, sizeof(IPSEC_SA_TRANSFORM_SETTING));
+
+	if (IkeV2SelectChildSaProposal(ike, sa_payload, child_setting, &client_spi) == false)
+	{
+		return false;
+	}
+
+	// The capsule mode follows the NAT detection result
+	if (sa->V2UseTransportMode)
+	{
+		child_setting->CapsuleMode = sa->V2NatDetected ? IKE_P2_CAPSULE_NAT_TRANSPORT_1 : IKE_P2_CAPSULE_TRANSPORT;
+	}
+	else
+	{
+		child_setting->CapsuleMode = sa->V2NatDetected ? IKE_P2_CAPSULE_NAT_TUNNEL_1 : IKE_P2_CAPSULE_TUNNEL;
+	}
+
+	*our_spi = GenerateNewIPsecSaSpi(ike, client_spi);
+
+	// Child SA key material: prf+ (SK_d, Ni | Nr).
+	// Layout: all the initiator keys first, then all the responder keys,
+	// each block being the encryption key followed by the integrity key
+	{
+		UINT enc_key_size = child_setting->CryptoKeySize;
+		UINT integ_key_size = child_setting->Hash->HashSize;
+		UINT keymat_size = 2 * (enc_key_size + integ_key_size);
+		BUF *keymat = IkeV2CalcChildSaKeymat(ike, sa, keymat_size);
+
+		if (keymat == NULL)
+		{
+			return false;
+		}
+
+		Zero(zero_iv, sizeof(zero_iv));
+
+		sa_c = NewIPsecSa(ike, c, sa, false, 1, false, zero_iv, *our_spi,
+			sa->InitiatorRand->Buf, sa->InitiatorRand->Size,
+			sa->ResponderRand->Buf, sa->ResponderRand->Size, child_setting, NULL, 0);
+
+		sa_s = NewIPsecSa(ike, c, sa, false, 1, true, zero_iv, client_spi,
+			sa->InitiatorRand->Buf, sa->InitiatorRand->Size,
+			sa->ResponderRand->Buf, sa->ResponderRand->Size, child_setting, NULL, 0);
+
+		if (sa_c == NULL || sa_s == NULL)
+		{
+			FreeBuf(keymat);
+			return false;
+		}
+
+		// Overwrite the IKEv1 key material with the IKEv2 derived keys:
+		// the inbound SA (client -> server) uses the initiator keys,
+		// the outbound SA (server -> client) uses the responder keys
+		{
+			UCHAR *km = (UCHAR *)keymat->Buf;
+			UCHAR *key_i = km;
+			UCHAR *key_r = km + enc_key_size + integ_key_size;
+
+			if (sa_c->CryptoKey != NULL)
+			{
+				IkeFreeKey(sa_c->CryptoKey);
+			}
+			sa_c->CryptoKey = IkeNewKey(child_setting->Crypto, key_i, enc_key_size);
+			Copy(sa_c->KeyMat, key_i, enc_key_size);
+			Copy(sa_c->HashKey, key_i + enc_key_size, integ_key_size);
+
+			if (sa_s->CryptoKey != NULL)
+			{
+				IkeFreeKey(sa_s->CryptoKey);
+			}
+			sa_s->CryptoKey = IkeNewKey(child_setting->Crypto, key_r, enc_key_size);
+			Copy(sa_s->KeyMat, key_r, enc_key_size);
+			Copy(sa_s->HashKey, key_r + enc_key_size, integ_key_size);
+		}
+
+		FreeBuf(keymat);
+	}
+
+	sa_c->PairIPsecSa = sa_s;
+	sa_s->PairIPsecSa = sa_c;
+
+	Insert(ike->IPsecSaList, sa_c);
+	Insert(ike->IPsecSaList, sa_s);
+
+	*sa_c_out = sa_c;
+	*sa_s_out = sa_s;
+
+	return true;
+}
+
+// Append the SAr2 and the narrowed traffic selectors to the response payload
+// list. The responder echoes the first selector of each direction, except
+// that when a virtual IP address was assigned and the initiator's selector
+// covers it, the initiator side is narrowed to exactly that address
+// (RFC 7296 section 2.9 traffic selector narrowing, as expected by
+// strongSwan and Apple clients).
+static bool IkeV2AddChildSaResponsePayloadsEx(IKE_SERVER *ike, LIST *payload_list,
+											  IPSEC_SA_TRANSFORM_SETTING *child_setting, UINT our_spi,
+											  IKE_PACKET_PAYLOAD *tsi_payload, IKE_PACKET_PAYLOAD *tsr_payload,
+											  IP *narrow_ip)
+{
+	IKEV2_PACKET_TS_PAYLOAD *tsi, *tsr;
+	IKEV2_TS *first_i;
+	// Validate arguments
+	if (ike == NULL || payload_list == NULL || child_setting == NULL || tsi_payload == NULL || tsr_payload == NULL)
+	{
+		return false;
+	}
+
+	tsi = &tsi_payload->Payload.TsV2;
+	tsr = &tsr_payload->Payload.TsV2;
+
+	if (LIST_NUM(tsi->TsList) < 1 || LIST_NUM(tsr->TsList) < 1)
+	{
+		return false;
+	}
+
+	Add(payload_list, IkeV2BuildChildSaResponseProposal(ike, child_setting, our_spi));
+
+	{
+		IKEV2_TS *echo_i = ZeroMalloc(sizeof(IKEV2_TS));
+		IKEV2_TS *echo_r = ZeroMalloc(sizeof(IKEV2_TS));
+		UINT i;
+
+		// Select the first IPv4 selector of the initiator: the peer may
+		// propose an IPv6 selector first (when it also requested an IPv6
+		// virtual address)
+		first_i = NULL;
+		for (i = 0; i < LIST_NUM(tsi->TsList); i++)
+		{
+			IKEV2_TS *ts = (IKEV2_TS *)LIST_DATA(tsi->TsList, i);
+
+			if (ts->Type == IKEV2_TS_IPV4_ADDR_RANGE)
+			{
+				first_i = ts;
+				break;
+			}
+		}
+
+		Copy(echo_r, LIST_DATA(tsr->TsList, 0), sizeof(IKEV2_TS));
+
+		if (narrow_ip != NULL && IsZeroIP(narrow_ip) == false)
+		{
+			// An IPv4 virtual address was assigned: narrow the initiator
+			// side to exactly that address. The "dynamic" selector some
+			// peers propose (an IPv6 any range while requesting both
+			// families) conceptually covers whatever address gets assigned,
+			// so narrowing applies even without an IPv4 selector in the
+			// proposal.
+			bool covered = true;
+
+			if (first_i != NULL)
+			{
+				covered = (CmpIpAddr(&first_i->StartAddress, narrow_ip) <= 0 &&
+					CmpIpAddr(narrow_ip, &first_i->EndAddress) <= 0);
+			}
+
+			if (covered)
+			{
+				Zero(echo_i, sizeof(IKEV2_TS));
+				echo_i->Type = IKEV2_TS_IPV4_ADDR_RANGE;
+				echo_i->IpProtocol = first_i != NULL ? first_i->IpProtocol : 0;
+				echo_i->StartPort = 0;
+				echo_i->EndPort = 65535;
+				Copy(&echo_i->StartAddress, narrow_ip, sizeof(IP));
+				Copy(&echo_i->EndAddress, narrow_ip, sizeof(IP));
+
+				first_i = NULL;	// echo_i already built
+			}
+		}
+
+		if (first_i != NULL)
+		{
+			Copy(echo_i, first_i, sizeof(IKEV2_TS));
+		}
+
+		Add(payload_list, IkeV2NewTsPayload(IKEV2_PAYLOAD_TS_INITIATOR, NewListSingle(echo_i)));
+		Add(payload_list, IkeV2NewTsPayload(IKEV2_PAYLOAD_TS_RESPONDER, NewListSingle(echo_r)));
+	}
+
+	return true;
+}
+
+static bool IkeV2AddChildSaResponsePayloads(IKE_SERVER *ike, LIST *payload_list,
+											IPSEC_SA_TRANSFORM_SETTING *child_setting, UINT our_spi,
+											IKE_PACKET_PAYLOAD *tsi_payload, IKE_PACKET_PAYLOAD *tsr_payload)
+{
+	return IkeV2AddChildSaResponsePayloadsEx(ike, payload_list, child_setting, our_spi,
+		tsi_payload, tsr_payload, NULL);
+}
+
 //// IKE_AUTH
 
-// Process an IKE_AUTH request
+static bool IkeV2AddChildSaResponsePayloadsEx(IKE_SERVER *ike, LIST *payload_list,
+											  IPSEC_SA_TRANSFORM_SETTING *child_setting, UINT our_spi,
+											  IKE_PACKET_PAYLOAD *tsi_payload, IKE_PACKET_PAYLOAD *tsr_payload,
+											  IP *narrow_ip);
+
+// Forward declarations of the IKE_AUTH sub handlers
+static void IkeV2ProcIkeAuthFirst(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, IKE_CLIENT *c, IKE_SA *sa);
+static void IkeV2ProcIkeAuthEapRound(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, IKE_CLIENT *c, IKE_SA *sa);
+static void IkeV2EapMschapV2Response(IKE_SERVER *ike, IKE_PACKET *header, IKE_CLIENT *c, IKE_SA *sa, BUF *type_data);
+static void IkeV2EapFinalRound(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, IKE_CLIENT *c, IKE_SA *sa,
+							   IKE_PACKET_PAYLOAD *auth_payload);
+
+// Process an IKE_AUTH request: dispatches to the first round handler or,
+// while the EAP exchange is running, to the EAP round handler
 void IkeV2ProcIkeAuth(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, IKE_CLIENT *c, IKE_SA *sa)
 {
-	IKE_PACKET_PAYLOAD *sa_payload, *idi_payload, *auth_payload, *tsi_payload, *tsr_payload;
-	IPSEC_SA_TRANSFORM_SETTING child_setting;
-	UINT client_spi = 0, our_spi;
-	LIST *payload_list;
-	BUF *idr_body = NULL;
-	IKE_PACKET_PAYLOAD *auth_out;
-	IPSECSA *sa_c = NULL, *sa_s = NULL;
-	UCHAR zero_iv[IKE_MAX_BLOCK_SIZE];
-	UCHAR idr_type;
 	// Validate arguments
 	if (ike == NULL || p == NULL || header == NULL || c == NULL || sa == NULL)
 	{
 		return;
 	}
 
-
-	if (sa->V2State != IKEV2_STATE_SA_INIT_SENT)
+	if (sa->V2State != IKEV2_STATE_SA_INIT_SENT && sa->V2State != IKEV2_STATE_IKE_AUTH_EAP)
 	{
 		return;
 	}
@@ -1750,6 +2419,27 @@ void IkeV2ProcIkeAuth(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, IKE_CLI
 	sa->V2MsgIdRecvExpected++;
 	sa->LastCommTick = ike->Now;
 
+	if (sa->V2State == IKEV2_STATE_SA_INIT_SENT)
+	{
+		IkeV2ProcIkeAuthFirst(ike, p, header, c, sa);
+	}
+	else
+	{
+		IkeV2ProcIkeAuthEapRound(ike, p, header, c, sa);
+	}
+}
+
+// Handle the first IKE_AUTH request: either the initiator authenticated
+// itself with the AUTH payload (pre-shared key mode) or it asks for EAP
+static void IkeV2ProcIkeAuthFirst(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, IKE_CLIENT *c, IKE_SA *sa)
+{
+	IKE_PACKET_PAYLOAD *sa_payload, *idi_payload, *auth_payload, *tsi_payload, *tsr_payload;
+	// Validate arguments
+	if (ike == NULL || p == NULL || header == NULL || c == NULL || sa == NULL)
+	{
+		return;
+	}
+
 	sa_payload = IkeGetPayload(header->PayloadList, IKEV2_PAYLOAD_SA, 0);
 	idi_payload = IkeGetPayload(header->PayloadList, IKEV2_PAYLOAD_ID_INITIATOR, 0);
 	auth_payload = IkeGetPayload(header->PayloadList, IKEV2_PAYLOAD_AUTH, 0);
@@ -1773,12 +2463,437 @@ void IkeV2ProcIkeAuth(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, IKE_CLI
 	sa->V2IdiBody = CloneBuf(idi_payload->BitArray);
 	sa->V2IdiType = idi_payload->Payload.Id.Type;
 
-	if (auth_payload == NULL)
-	{
-		// The initiator asks for EAP authentication (RFC 7296 section 2.16).
-		// EAP is not supported in this phase.
-		IPsecLog(ike, c, sa, NULL, "LI2_EAP_UNSUPPORTED");
+	// The USE_TRANSPORT_MODE notify only appears in the first IKE_AUTH request
+	sa->V2UseTransportMode = (IkeV2GetNotifyPayload(header, IKEV2_NOTIFY_USE_TRANSPORT_MODE, 0) != NULL) ? true : false;
 
+	if (auth_payload != NULL)
+	{
+		// Pre-shared key mode
+		IPSEC_SA_TRANSFORM_SETTING child_setting;
+		UINT our_spi = 0;
+		IPSECSA *sa_c = NULL, *sa_s = NULL;
+		LIST *payload_list;
+		BUF *idr_body = NULL;
+		UCHAR idr_type;
+		IKE_PACKET_PAYLOAD *auth_out;
+
+		if (IkeV2VerifyInitiatorAuthSecret(ike, sa, auth_payload, ike->Secret, StrLen(ike->Secret)) == false)
+		{
+			IPsecLog(ike, c, sa, NULL, "LI2_AUTH_FAILED");
+
+			IkeV2SendEncryptedNotify(ike, sa, IKE_EXCHANGE_TYPE_IKE_AUTH, header->MessageId,
+				IKEV2_NOTIFY_AUTHENTICATION_FAILED, NULL, 0);
+
+			IkeV2MarkIkeSaDeleted(ike, sa);
+			return;
+		}
+
+		StrCpy(c->ClientId, sizeof(c->ClientId), idi_payload->Payload.Id.StrData);
+		StrCpy(sa->Secret, sizeof(sa->Secret), ike->Secret);
+
+		if (IkeV2CreateChildSaPair(ike, c, sa, sa_payload, &child_setting, &our_spi, &sa_c, &sa_s) == false)
+		{
+			IPsecLog(ike, c, sa, NULL, "LI_IPSEC_NO_TRANSFORM");
+
+			IkeV2SendEncryptedNotify(ike, sa, IKE_EXCHANGE_TYPE_IKE_AUTH, header->MessageId,
+				IKEV2_NOTIFY_NO_PROPOSAL_CHOSEN, NULL, 0);
+
+			IkeV2MarkIkeSaDeleted(ike, sa);
+			return;
+		}
+
+		idr_body = IkeV2BuildIdrBody(ike, c, &idr_type);
+
+		payload_list = NewListFast(NULL);
+
+		Add(payload_list, IkeV2NewIdPayload(IKEV2_PAYLOAD_ID_RESPONDER, idr_type,
+			((UCHAR *)idr_body->Buf) + 4, idr_body->Size - 4));
+
+		auth_out = IkeV2BuildAuthSecret(ike, sa, ike->Secret, StrLen(ike->Secret),
+			sa->V2SaInitResponseData, sa->InitiatorRand,
+			sa->V2SkPr, sa->TransformSetting.V2Prf->HashSize, idr_body);
+
+		if (auth_out != NULL)
+		{
+			// Payload order: IDr, AUTH, SAr2, TSi, TSr
+			Add(payload_list, auth_out);
+		}
+
+		if (auth_out == NULL || IkeV2AddChildSaResponsePayloads(ike, payload_list, &child_setting,
+			our_spi, tsi_payload, tsr_payload) == false)
+		{
+			IkeFreePayloadList(payload_list);
+			FreeBuf(idr_body);
+			IkeV2MarkIkeSaDeleted(ike, sa);
+			return;
+		}
+
+		IkeV2SendEncryptedResponse(ike, sa, IKE_EXCHANGE_TYPE_IKE_AUTH, header->MessageId, payload_list);
+
+		FreeBuf(idr_body);
+
+		// State transition
+		sa->Established = true;
+		sa->EstablishedTick = ike->Now;
+		sa->V2State = IKEV2_STATE_ESTABLISHED;
+
+		sa_c->Established = true;
+		sa_s->Established = true;
+
+		c->CurrentIkeSa = sa;
+		c->CurrentIpSecSaRecv = sa_c;
+		c->CurrentIpSecSaSend = sa_s;
+
+		IPsecLog(ike, c, sa, sa_c, "LI2_IKE_SA_ESTABLISHED",
+			sa->InitiatorCookie, sa->ResponderCookie, c->ClientId,
+			sa->V2UseTransportMode ? _UU("L_YES") : _UU("L_NO"),
+			sa->V2NatDetected ? _UU("L_YES") : _UU("L_NO"),
+			child_setting.Crypto->Name, child_setting.CryptoKeySize * 8, child_setting.Hash->Name);
+	}
+	else
+	{
+		// The initiator asks for EAP authentication (RFC 7296 section 2.16)
+		LIST *payload_list;
+		BUF *idr_body = NULL;
+		UCHAR idr_type;
+		IKE_PACKET_PAYLOAD *auth_out;
+
+		StrCpy(c->ClientId, sizeof(c->ClientId), idi_payload->Payload.Id.StrData);
+		StrCpy(sa->V2EapUsername, sizeof(sa->V2EapUsername), idi_payload->Payload.Id.StrData);
+
+		// Remember the Child SA proposal and the traffic selectors: they are
+		// needed when the exchange completes several rounds later
+		if (sa->V2ChildSaBody != NULL)
+		{
+			FreeBuf(sa->V2ChildSaBody);
+		}
+		sa->V2ChildSaBody = CloneBuf(sa_payload->BitArray);
+		if (sa->V2TsiBody != NULL)
+		{
+			FreeBuf(sa->V2TsiBody);
+		}
+		sa->V2TsiBody = CloneBuf(tsi_payload->BitArray);
+		if (sa->V2TsrBody != NULL)
+		{
+			FreeBuf(sa->V2TsrBody);
+		}
+		sa->V2TsrBody = CloneBuf(tsr_payload->BitArray);
+
+		sa->V2EapMode = true;
+		sa->V2State = IKEV2_STATE_IKE_AUTH_EAP;
+		sa->V2EapLastSentId = (UCHAR)(Rand32() % 250 + 1);
+
+		// First EAP response: IDr, our AUTH (shared key), EAP-Request/Identity
+		idr_body = IkeV2BuildIdrBody(ike, c, &idr_type);
+
+		payload_list = NewListFast(NULL);
+
+		Add(payload_list, IkeV2NewIdPayload(IKEV2_PAYLOAD_ID_RESPONDER, idr_type,
+			((UCHAR *)idr_body->Buf) + 4, idr_body->Size - 4));
+
+		auth_out = IkeV2BuildAuthSecret(ike, sa, ike->Secret, StrLen(ike->Secret),
+			sa->V2SaInitResponseData, sa->InitiatorRand,
+			sa->V2SkPr, sa->TransformSetting.V2Prf->HashSize, idr_body);
+
+		FreeBuf(idr_body);
+
+		if (auth_out == NULL)
+		{
+			IkeFreePayloadList(payload_list);
+			IkeV2MarkIkeSaDeleted(ike, sa);
+			return;
+		}
+
+		Add(payload_list, auth_out);
+
+		Add(payload_list, IkeV2NewEapPayload(IKEV2_EAP_CODE_REQUEST, sa->V2EapLastSentId,
+			IKEV2_EAP_TYPE_IDENTITY, NULL, 0));
+
+		IkeV2SendEncryptedResponse(ike, sa, IKE_EXCHANGE_TYPE_IKE_AUTH, header->MessageId, payload_list);
+
+		IPsecLog(ike, c, sa, NULL, "LI2_EAP_STARTED", c->ClientId);
+	}
+}
+
+// Handle an IKE_AUTH round while the EAP exchange is running, including the
+// final request that carries the AUTH payload computed with the EAP MSK
+static void IkeV2ProcIkeAuthEapRound(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, IKE_CLIENT *c, IKE_SA *sa)
+{
+	IKE_PACKET_PAYLOAD *auth_payload, *eap_payload;
+	// Validate arguments
+	if (ike == NULL || p == NULL || header == NULL || c == NULL || sa == NULL)
+	{
+		return;
+	}
+
+	auth_payload = IkeGetPayload(header->PayloadList, IKEV2_PAYLOAD_AUTH, 0);
+	eap_payload = IkeGetPayload(header->PayloadList, IKEV2_PAYLOAD_EAP, 0);
+
+	if (auth_payload != NULL)
+	{
+		// Final round: the initiator proves possession of the EAP MSK
+		IkeV2EapFinalRound(ike, p, header, c, sa, auth_payload);
+		return;
+	}
+
+	if (eap_payload == NULL)
+	{
+		IkeV2SendEncryptedNotify(ike, sa, IKE_EXCHANGE_TYPE_IKE_AUTH, header->MessageId,
+			IKEV2_NOTIFY_INVALID_SYNTAX, NULL, 0);
+
+		IkeV2MarkIkeSaDeleted(ike, sa);
+		return;
+	}
+
+	// Parse the EAP message
+	{
+		UCHAR code, id, type;
+		BUF *type_data = NULL;
+
+		if (IkeV2ParseEapMessage(eap_payload->Payload.GeneralData.Data, &code, &id, &type, &type_data) == false)
+		{
+			IkeV2SendEncryptedNotify(ike, sa, IKE_EXCHANGE_TYPE_IKE_AUTH, header->MessageId,
+				IKEV2_NOTIFY_INVALID_SYNTAX, NULL, 0);
+
+			IkeV2MarkIkeSaDeleted(ike, sa);
+			return;
+		}
+
+		if (code != IKEV2_EAP_CODE_RESPONSE)
+		{
+			FreeBuf(type_data);
+			return;
+		}
+
+		if (type == IKEV2_EAP_TYPE_IDENTITY)
+		{
+			// Identity response: start the MSCHAPv2 challenge
+			char identity[MAX_SIZE];
+			UINT identity_len;
+
+			Zero(identity, sizeof(identity));
+
+			if (type_data != NULL && type_data->Size > 0)
+			{
+				identity_len = MIN(type_data->Size, sizeof(identity) - 1);
+				Copy(identity, type_data->Buf, identity_len);
+				identity[identity_len] = 0;
+			}
+
+			if (IsEmptyStr(identity) == false)
+			{
+				StrCpy(sa->V2EapUsername, sizeof(sa->V2EapUsername), identity);
+			}
+
+			Rand(sa->V2MsChapV2ServerChallenge, IKEV2_MSCHAPV2_CHALLENGE_SIZE);
+
+			sa->V2EapLastSentId++;
+
+			{
+				LIST *payload_list = NewListSingle(IkeV2NewEapMschapV2Challenge(
+					sa->V2EapLastSentId, sa->V2EapLastSentId,
+					sa->V2MsChapV2ServerChallenge, "SoftEther VPN"));
+
+				IkeV2SendEncryptedResponse(ike, sa, IKE_EXCHANGE_TYPE_IKE_AUTH, header->MessageId, payload_list);
+			}
+
+			FreeBuf(type_data);
+		}
+		else if (type == IKEV2_EAP_TYPE_MSCHAPV2)
+		{
+			if (type_data != NULL && type_data->Size >= 1)
+			{
+				UCHAR opcode = ((UCHAR *)type_data->Buf)[0];
+
+				if (opcode == 2)
+				{
+					// MSCHAPv2 Response
+					IkeV2EapMschapV2Response(ike, header, c, sa, type_data);
+					type_data = NULL;	// Ownership taken over
+				}
+				else if (opcode == 3)
+				{
+					// MSCHAPv2 Success acknowledgement: finish with EAP-Success
+					if (sa->V2MsChapV2SuccessSent && sa->V2MskSize != 0)
+					{
+						LIST *payload_list = NewListSingle(IkeV2NewEapPayload(IKEV2_EAP_CODE_SUCCESS,
+							sa->V2EapLastSentId, 0, NULL, 0));
+
+						IkeV2SendEncryptedResponse(ike, sa, IKE_EXCHANGE_TYPE_IKE_AUTH, header->MessageId, payload_list);
+					}
+
+					FreeBuf(type_data);
+					type_data = NULL;
+				}
+				else
+				{
+					FreeBuf(type_data);
+					type_data = NULL;
+					IkeV2MarkIkeSaDeleted(ike, sa);
+				}
+			}
+
+			if (type_data != NULL)
+			{
+				FreeBuf(type_data);
+			}
+		}
+		else if (type == IKEV2_EAP_TYPE_NAK)
+		{
+			// NAK in response to our EAP-Request/Identity: the peer lists
+			// the methods it supports. strongSwan answers the identity
+			// request with a NAK naming its configured method instead of an
+			// EAP-Response/Identity, so start MSCHAPv2 when it is offered
+			bool mschapv2_preferred = false;
+
+			if (type_data != NULL)
+			{
+				UINT i;
+				for (i = 0; i < type_data->Size; i++)
+				{
+					if (((UCHAR *)type_data->Buf)[i] == IKEV2_EAP_TYPE_MSCHAPV2)
+					{
+						mschapv2_preferred = true;
+						break;
+					}
+				}
+			}
+
+			FreeBuf(type_data);
+			type_data = NULL;
+
+			if (mschapv2_preferred)
+			{
+				// Proceed with the MSCHAPv2 challenge
+				Rand(sa->V2MsChapV2ServerChallenge, IKEV2_MSCHAPV2_CHALLENGE_SIZE);
+
+				sa->V2EapLastSentId++;
+
+				{
+					LIST *payload_list = NewListSingle(IkeV2NewEapMschapV2Challenge(
+						sa->V2EapLastSentId, sa->V2EapLastSentId,
+						sa->V2MsChapV2ServerChallenge, "SoftEther VPN"));
+
+					IkeV2SendEncryptedResponse(ike, sa, IKE_EXCHANGE_TYPE_IKE_AUTH, header->MessageId, payload_list);
+				}
+			}
+			else
+			{
+				LIST *payload_list = NewListSingle(IkeV2NewEapPayload(IKEV2_EAP_CODE_FAILURE,
+					sa->V2EapLastSentId, 0, NULL, 0));
+
+				IkeV2SendEncryptedResponse(ike, sa, IKE_EXCHANGE_TYPE_IKE_AUTH, header->MessageId, payload_list);
+
+				IPsecLog(ike, c, sa, NULL, "LI2_EAP_UNSUPPORTED");
+
+				IkeV2MarkIkeSaDeleted(ike, sa);
+			}
+		}
+		else
+		{
+			FreeBuf(type_data);
+			IkeV2MarkIkeSaDeleted(ike, sa);
+		}
+	}
+}
+
+// Verify an MSCHAPv2 response, derive the MSK and start the hub session
+static void IkeV2EapMschapV2Response(IKE_SERVER *ike, IKE_PACKET *header, IKE_CLIENT *c, IKE_SA *sa, BUF *type_data)
+{
+	UCHAR peer_challenge[IKEV2_MSCHAPV2_CHALLENGE_SIZE];
+	UCHAR nt_response[IKEV2_MSCHAPV2_NT_RESPONSE_SIZE];
+	char name[MAX_SIZE];
+	UCHAR nt_hash_hash[MD5_SIZE];
+	UCHAR server_response_20[IKEV2_MSCHAPV2_S_RESPONSE_SIZE];
+	// Validate arguments
+	if (ike == NULL || header == NULL || c == NULL || sa == NULL || type_data == NULL)
+	{
+		return;
+	}
+
+	if (sa->V2MskSize != 0)
+	{
+		// A response was already processed: ignore duplicates
+		return;
+	}
+
+	Zero(name, sizeof(name));
+
+	if (IkeV2ParseEapMschapV2Response(type_data, peer_challenge, nt_response, name, sizeof(name)) == false)
+	{
+		IkeV2MarkIkeSaDeleted(ike, sa);
+		return;
+	}
+
+	if (IsEmptyStr(name))
+	{
+		StrCpy(name, sizeof(name), sa->V2EapUsername);
+	}
+
+	StrCpy(sa->V2EapUsername, sizeof(sa->V2EapUsername), name);
+
+	if (IkeV2MsChapV2VerifyHubUser(ike, name, sa->V2MsChapV2ServerChallenge, peer_challenge, nt_response,
+		nt_hash_hash, server_response_20) == false)
+	{
+		IPsecLog(ike, c, sa, NULL, "LI2_AUTH_FAILED");
+
+		{
+			LIST *payload_list = NewListSingle(IkeV2NewEapPayload(IKEV2_EAP_CODE_FAILURE,
+				sa->V2EapLastSentId, 0, NULL, 0));
+
+			IkeV2SendEncryptedResponse(ike, sa, IKE_EXCHANGE_TYPE_IKE_AUTH, header->MessageId, payload_list);
+		}
+
+		IkeV2MarkIkeSaDeleted(ike, sa);
+		return;
+	}
+
+	// Derive the MSK and remember it for the final AUTH exchange
+	IkeV2CalcMskFromMsChapV2(nt_hash_hash, nt_response, sa->V2Msk);
+	sa->V2MskSize = IKEV2_MSK_SIZE;
+
+	// Start the hub session in the background: the IPC login re-verifies the
+	// MSCHAPv2 data and the DHCP request obtains the virtual IP address
+	if (c->V2IpcAsync == NULL)
+	{
+		c->V2IpcAsync = IkeV2NewIpcAsync(ike, c, name,
+			sa->V2MsChapV2ServerChallenge, peer_challenge, nt_response);
+	}
+
+	sa->V2MsChapV2SuccessSent = true;
+	sa->V2EapLastSentId++;
+
+	{
+		LIST *payload_list = NewListSingle(IkeV2NewEapMschapV2Success(
+			sa->V2EapLastSentId, sa->V2EapLastSentId, server_response_20));
+
+		IkeV2SendEncryptedResponse(ike, sa, IKE_EXCHANGE_TYPE_IKE_AUTH, header->MessageId, payload_list);
+	}
+}
+
+// Final round of the EAP exchange: verify the AUTH computed with the MSK,
+// finish the Child SA creation and reply with the virtual IP configuration
+static void IkeV2EapFinalRound(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, IKE_CLIENT *c, IKE_SA *sa,
+							   IKE_PACKET_PAYLOAD *auth_payload)
+{
+	IKE_PACKET_PAYLOAD *sa_payload, *tsi_payload, *tsr_payload;
+	IPSEC_SA_TRANSFORM_SETTING child_setting;
+	UINT our_spi = 0;
+	IPSECSA *sa_c = NULL, *sa_s = NULL;
+	IPC *ipc;
+	LIST *payload_list;
+	BUF *idr_body = NULL;
+	UCHAR idr_type;
+	IKE_PACKET_PAYLOAD *auth_out, *cp_payload;
+	// Validate arguments
+	if (ike == NULL || p == NULL || header == NULL || c == NULL || sa == NULL || auth_payload == NULL)
+	{
+		return;
+	}
+
+	if (sa->V2MskSize == 0)
+	{
+		// EAP was not completed
 		IkeV2SendEncryptedNotify(ike, sa, IKE_EXCHANGE_TYPE_IKE_AUTH, header->MessageId,
 			IKEV2_NOTIFY_AUTHENTICATION_FAILED, NULL, 0);
 
@@ -1786,8 +2901,7 @@ void IkeV2ProcIkeAuth(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, IKE_CLI
 		return;
 	}
 
-	// Verify the AUTH payload of the initiator
-	if (IkeV2VerifyInitiatorAuth(ike, sa, auth_payload) == false)
+	if (IkeV2VerifyInitiatorAuthSecret(ike, sa, auth_payload, sa->V2Msk, sa->V2MskSize) == false)
 	{
 		IPsecLog(ike, c, sa, NULL, "LI2_AUTH_FAILED");
 
@@ -1798,195 +2912,110 @@ void IkeV2ProcIkeAuth(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, IKE_CLI
 		return;
 	}
 
-	// Authentication of the IKE SA succeeded: record the client identity
-	StrCpy(c->ClientId, sizeof(c->ClientId), idi_payload->Payload.Id.StrData);
-	StrCpy(sa->Secret, sizeof(sa->Secret), ike->Secret);
+	// Wait for the hub session (login + DHCP) to become ready
+	ipc = IkeV2WaitIpcReady(c);
 
-	// Select the Child SA proposal
-	Zero(&child_setting, sizeof(child_setting));
+	if (ipc == NULL)
+	{
+		IPsecLog(ike, c, sa, NULL, "LI2_IPC_FAILED", sa->V2EapUsername);
 
-	if (IkeV2SelectChildSaProposal(ike, sa_payload, &child_setting, &client_spi) == false)
+		IkeV2SendEncryptedNotify(ike, sa, IKE_EXCHANGE_TYPE_IKE_AUTH, header->MessageId,
+			IKEV2_NOTIFY_AUTHENTICATION_FAILED, NULL, 0);
+
+		IkeV2MarkIkeSaDeleted(ike, sa);
+		return;
+	}
+
+	c->V2Ipc = ipc;
+	IPCSetSockEventWhenRecvL2Packet(ipc, ike->SockEvent);
+
+	// Open the L3 protocol of the IPC virtual host: without this the IPC
+	// discards every received IPv4 packet instead of queueing it for
+	// IPCRecvIPv4 (the WireGuard module sets the same flag)
+	IPC_PROTO_SET_STATUS(ipc, IPv4State, IPC_PROTO_STATUS_OPENED);
+
+	// Re-parse the stored Child SA proposal and traffic selectors
+	sa_payload = IkeParsePayload(IKEV2_PAYLOAD_SA, sa->V2ChildSaBody);
+	tsi_payload = IkeParsePayload(IKEV2_PAYLOAD_TS_INITIATOR, sa->V2TsiBody);
+	tsr_payload = IkeParsePayload(IKEV2_PAYLOAD_TS_RESPONDER, sa->V2TsrBody);
+
+	if (sa_payload == NULL || tsi_payload == NULL || tsr_payload == NULL ||
+		IkeV2CreateChildSaPair(ike, c, sa, sa_payload, &child_setting, &our_spi, &sa_c, &sa_s) == false)
 	{
 		IPsecLog(ike, c, sa, NULL, "LI_IPSEC_NO_TRANSFORM");
 
 		IkeV2SendEncryptedNotify(ike, sa, IKE_EXCHANGE_TYPE_IKE_AUTH, header->MessageId,
 			IKEV2_NOTIFY_NO_PROPOSAL_CHOSEN, NULL, 0);
 
+		if (sa_payload != NULL)
+		{
+			IkeFreePayload(sa_payload);
+		}
+		if (tsi_payload != NULL)
+		{
+			IkeFreePayload(tsi_payload);
+		}
+		if (tsr_payload != NULL)
+		{
+			IkeFreePayload(tsr_payload);
+		}
+
 		IkeV2MarkIkeSaDeleted(ike, sa);
 		return;
 	}
 
-	// Transport mode is requested by a USE_TRANSPORT_MODE status notify
-	sa->V2UseTransportMode = (IkeV2GetNotifyPayload(header, IKEV2_NOTIFY_USE_TRANSPORT_MODE, 0) != NULL) ? true : false;
+	// Build the final response: AUTH(MSK), CP, SAr2, TSi, TSr
+	idr_body = IkeV2BuildIdrBody(ike, c, &idr_type);
 
-	// The capsule mode follows the NAT detection result: behind a NAT the ESP
-	// packets must be encapsulated into UDP port 4500
-	if (sa->V2UseTransportMode)
-	{
-		child_setting.CapsuleMode = sa->V2NatDetected ? IKE_P2_CAPSULE_NAT_TRANSPORT_1 : IKE_P2_CAPSULE_TRANSPORT;
-	}
-	else
-	{
-		child_setting.CapsuleMode = sa->V2NatDetected ? IKE_P2_CAPSULE_NAT_TUNNEL_1 : IKE_P2_CAPSULE_TUNNEL;
-	}
-
-	// Choose our own inbound SPI
-	our_spi = GenerateNewIPsecSaSpi(ike, client_spi);
-
-	// Child SA key material: prf+ (SK_d, Ni | Nr).
-	// Layout: all the initiator keys first, then all the responder keys,
-	// each block being the encryption key followed by the integrity key
-	{
-		UINT enc_key_size = child_setting.CryptoKeySize;
-		UINT integ_key_size = child_setting.Hash->HashSize;
-		UINT keymat_size = 2 * (enc_key_size + integ_key_size);
-		BUF *keymat = IkeV2CalcChildSaKeymat(ike, sa, keymat_size);
-		UCHAR *km;
-
-		if (keymat == NULL)
-		{
-			IkeV2SendEncryptedNotify(ike, sa, IKE_EXCHANGE_TYPE_IKE_AUTH, header->MessageId,
-				IKEV2_NOTIFY_NO_PROPOSAL_CHOSEN, NULL, 0);
-
-			IkeV2MarkIkeSaDeleted(ike, sa);
-			return;
-		}
-
-		km = (UCHAR *)keymat->Buf;
-
-		// Create both directions of the Child SA
-		Zero(zero_iv, sizeof(zero_iv));
-
-		sa_c = NewIPsecSa(ike, c, sa, false, header->MessageId, false, zero_iv, our_spi,
-			sa->InitiatorRand->Buf, sa->InitiatorRand->Size,
-			sa->ResponderRand->Buf, sa->ResponderRand->Size, &child_setting, NULL, 0);
-
-		sa_s = NewIPsecSa(ike, c, sa, false, header->MessageId, true, zero_iv, client_spi,
-			sa->InitiatorRand->Buf, sa->InitiatorRand->Size,
-			sa->ResponderRand->Buf, sa->ResponderRand->Size, &child_setting, NULL, 0);
-
-		if (sa_c == NULL || sa_s == NULL)
-		{
-			FreeBuf(keymat);
-			IkeV2MarkIkeSaDeleted(ike, sa);
-			return;
-		}
-
-		// Overwrite the IKEv1 key material with the IKEv2 derived keys:
-		// the inbound SA (client -> server) uses the initiator keys,
-		// the outbound SA (server -> client) uses the responder keys
-		{
-			UCHAR *key_i = km;
-			UCHAR *key_r = km + enc_key_size + integ_key_size;
-
-			if (sa_c->CryptoKey != NULL)
-			{
-				IkeFreeKey(sa_c->CryptoKey);
-			}
-			sa_c->CryptoKey = IkeNewKey(child_setting.Crypto, key_i, enc_key_size);
-			Copy(sa_c->KeyMat, key_i, enc_key_size);
-			Copy(sa_c->HashKey, key_i + enc_key_size, integ_key_size);
-
-			if (sa_s->CryptoKey != NULL)
-			{
-				IkeFreeKey(sa_s->CryptoKey);
-			}
-			sa_s->CryptoKey = IkeNewKey(child_setting.Crypto, key_r, enc_key_size);
-			Copy(sa_s->KeyMat, key_r, enc_key_size);
-			Copy(sa_s->HashKey, key_r + enc_key_size, integ_key_size);
-		}
-
-		FreeBuf(keymat);
-	}
-
-	sa_c->PairIPsecSa = sa_s;
-	sa_s->PairIPsecSa = sa_c;
-
-	Insert(ike->IPsecSaList, sa_c);
-	Insert(ike->IPsecSaList, sa_s);
-
-	// Build the IDr payload body: our own address
-	{
-		UCHAR addr[16];
-		UINT addr_size;
-
-		if (IsIP6(&c->ServerIP))
-		{
-			Copy(addr, c->ServerIP.address, 16);
-			addr_size = 16;
-			idr_type = IKE_ID_IPV6_ADDR;
-		}
-		else
-		{
-			Copy(addr, IPV4(c->ServerIP.address), IPV4_SIZE);
-			addr_size = IPV4_SIZE;
-			idr_type = IKE_ID_IPV4_ADDR;
-		}
-
-		idr_body = NewBuf();
-		{
-			UCHAR id_header[4];
-			Zero(id_header, sizeof(id_header));
-			id_header[0] = idr_type;
-			WriteBuf(idr_body, id_header, sizeof(id_header));
-			WriteBuf(idr_body, addr, addr_size);
-		}
-	}
-
-	// Build the response: IDr, AUTH, SAr2, TSi, TSr
 	payload_list = NewListFast(NULL);
 
-	Add(payload_list, IkeV2NewIdPayload(IKEV2_PAYLOAD_ID_RESPONDER, idr_type,
-		((UCHAR *)idr_body->Buf) + 4, idr_body->Size - 4));
-
-	// Our AUTH payload: signed octets over the IKE_SA_INIT response
-	auth_out = IkeV2BuildPskAuth(ike, sa, sa->V2SaInitResponseData, sa->InitiatorRand,
+	auth_out = IkeV2BuildAuthSecret(ike, sa, sa->V2Msk, sa->V2MskSize,
+		sa->V2SaInitResponseData, sa->InitiatorRand,
 		sa->V2SkPr, sa->TransformSetting.V2Prf->HashSize, idr_body);
+
+	FreeBuf(idr_body);
 
 	if (auth_out == NULL)
 	{
 		IkeFreePayloadList(payload_list);
-		FreeBuf(idr_body);
+		IkeFreePayload(sa_payload);
+		IkeFreePayload(tsi_payload);
+		IkeFreePayload(tsr_payload);
 		IkeV2MarkIkeSaDeleted(ike, sa);
 		return;
 	}
 
 	Add(payload_list, auth_out);
 
-	Add(payload_list, IkeV2BuildChildSaResponseProposal(ike, &child_setting, our_spi));
-
-	// Echo the first traffic selector of each direction: returning a subset
-	// of the selectors proposed by the initiator is always a valid narrowing
+	cp_payload = IkeV2NewCpReplyPayload(c->V2IpcAsync);
+	if (cp_payload != NULL)
 	{
-		IKEV2_PACKET_TS_PAYLOAD *tsi = &tsi_payload->Payload.TsV2;
-		IKEV2_PACKET_TS_PAYLOAD *tsr = &tsr_payload->Payload.TsV2;
+		Add(payload_list, cp_payload);
+	}
 
-		if (LIST_NUM(tsi->TsList) >= 1 && LIST_NUM(tsr->TsList) >= 1)
-		{
-			IKEV2_TS *ts_i = LIST_DATA(tsi->TsList, 0);
-			IKEV2_TS *ts_r = LIST_DATA(tsr->TsList, 0);
-			IKEV2_TS *echo_i = ZeroMalloc(sizeof(IKEV2_TS));
-			IKEV2_TS *echo_r = ZeroMalloc(sizeof(IKEV2_TS));
+	{
+		IP narrow_ip;
 
-			Copy(echo_i, ts_i, sizeof(IKEV2_TS));
-			Copy(echo_r, ts_r, sizeof(IKEV2_TS));
+		Zero(&narrow_ip, sizeof(narrow_ip));
+		UINTToIP(&narrow_ip, c->V2IpcAsync->L3ClientAddressOption.ClientAddress);
 
-			Add(payload_list, IkeV2NewTsPayload(IKEV2_PAYLOAD_TS_INITIATOR, NewListSingle(echo_i)));
-			Add(payload_list, IkeV2NewTsPayload(IKEV2_PAYLOAD_TS_RESPONDER, NewListSingle(echo_r)));
-		}
-		else
+		if (IkeV2AddChildSaResponsePayloadsEx(ike, payload_list, &child_setting, our_spi,
+			tsi_payload, tsr_payload, &narrow_ip) == false)
 		{
 			IkeFreePayloadList(payload_list);
-			FreeBuf(idr_body);
+			IkeFreePayload(sa_payload);
+			IkeFreePayload(tsi_payload);
+			IkeFreePayload(tsr_payload);
 			IkeV2MarkIkeSaDeleted(ike, sa);
 			return;
 		}
 	}
 
-	// Send the IKE_AUTH response (takes the ownership of the payload list)
 	IkeV2SendEncryptedResponse(ike, sa, IKE_EXCHANGE_TYPE_IKE_AUTH, header->MessageId, payload_list);
 
-	FreeBuf(idr_body);
+	IkeFreePayload(sa_payload);
+	IkeFreePayload(tsi_payload);
+	IkeFreePayload(tsr_payload);
 
 	// State transition
 	sa->Established = true;
@@ -2000,11 +3029,22 @@ void IkeV2ProcIkeAuth(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, IKE_CLI
 	c->CurrentIpSecSaRecv = sa_c;
 	c->CurrentIpSecSaSend = sa_s;
 
-	IPsecLog(ike, c, sa, sa_c, "LI2_IKE_SA_ESTABLISHED",
-		sa->InitiatorCookie, sa->ResponderCookie, c->ClientId,
-		sa->V2UseTransportMode ? _UU("L_YES") : _UU("L_NO"),
-		sa->V2NatDetected ? _UU("L_YES") : _UU("L_NO"),
-		child_setting.Crypto->Name, child_setting.CryptoKeySize * 8, child_setting.Hash->Name);
+	{
+		char ip_str[64];
+		IP vip;
+
+		Zero(&vip, sizeof(vip));
+		UINTToIP(&vip, c->V2IpcAsync->L3ClientAddressOption.ClientAddress);
+		IPToStr(ip_str, sizeof(ip_str), &vip);
+
+		IPsecLog(ike, c, sa, sa_c, "LI2_IKE_SA_ESTABLISHED",
+			sa->InitiatorCookie, sa->ResponderCookie, sa->V2EapUsername,
+			sa->V2UseTransportMode ? _UU("L_YES") : _UU("L_NO"),
+			sa->V2NatDetected ? _UU("L_YES") : _UU("L_NO"),
+			child_setting.Crypto->Name, child_setting.CryptoKeySize * 8, child_setting.Hash->Name);
+
+		IPsecLog(ike, c, sa, NULL, "LI2_IPC_CONNECTED", ip_str);
+	}
 }
 
 //// INFORMATIONAL

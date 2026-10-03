@@ -41,6 +41,16 @@
 // IKEv2 default Child SA lifetime
 #define	IKEV2_CHILD_LIFETIME_DEFAULT		3600	// Seconds
 
+// IKEv2 EAP-MSCHAPv2 sizes
+#define	IKEV2_MSCHAPV2_CHALLENGE_SIZE		16		// Server / peer challenge size
+#define	IKEV2_MSCHAPV2_NT_RESPONSE_SIZE		24		// NT-Response size
+#define	IKEV2_MSCHAPV2_S_RESPONSE_SIZE		20		// Authenticator response size
+#define	IKEV2_MSK_SIZE						64		// EAP Master Session Key size (RFC 3079 strongSwan form)
+
+// IKEv2 IPC (user plane) constants
+#define	IKEV2_IPC_POSTFIX					"IKEV2"	// IPC session postfix
+#define	IKEV2_IPC_MSS						1380	// TCP MSS announced to the IPC virtual host
+
 // ESP
 #define	IKE_ESP_HASH_SIZE					12	// The hash size for the ESP packet
 
@@ -188,6 +198,10 @@ struct IKE_CLIENT
 	IP TunnelModeServerIP;						// Server-side internal IP address
 	IP TunnelModeClientIP;						// Client-side internal IP address
 	USHORT TunnelSendIpId;						// ID of the transmission IP header
+
+	// IKEv2 user plane
+	IPC_ASYNC *V2IpcAsync;						// Async IPC connection into the virtual hub (L3 + DHCP)
+	IPC *V2Ipc;									// The IPC object once ready (owned by V2IpcAsync)
 };
 
 // IKE SA
@@ -246,6 +260,18 @@ struct IKE_SA
 	BUF *V2SaInitResponseData;					// Raw IKE_SA_INIT response bytes (for AUTH calculation)
 	BUF *V2IdiBody;								// Raw IDi payload body (for AUTH calculation)
 	UCHAR V2IdiType;							// IDi type
+
+	// IKEv2 EAP state
+	bool V2EapMode;								// IKE_AUTH is running in EAP mode
+	UCHAR V2EapLastSentId;						// EAP identifier of the last request we sent
+	UCHAR V2MsChapV2ServerChallenge[IKEV2_MSCHAPV2_CHALLENGE_SIZE];	// Our MSCHAPv2 challenge
+	bool V2MsChapV2SuccessSent;					// MSCHAPv2 success request already sent
+	char V2EapUsername[MAX_SIZE];				// Identity presented during the EAP exchange
+	UCHAR V2Msk[IKEV2_MSK_SIZE];				// Master Session Key derived from EAP
+	UINT V2MskSize;								// Size of the MSK (0 = no MSK yet)
+	BUF *V2ChildSaBody;							// Raw SAi2 payload body received in the first IKE_AUTH
+	BUF *V2TsiBody;								// Raw TSi payload body received in the first IKE_AUTH
+	BUF *V2TsrBody;								// Raw TSr payload body received in the first IKE_AUTH
 };
 
 // IPsec SA

@@ -10,6 +10,7 @@
 
 #include "Cedar.h"
 #include "Connection.h"
+#include "IPC.h"
 #include "Logging.h"
 #include "Proto_EtherIP.h"
 #include "Proto_IPsec.h"
@@ -582,7 +583,16 @@ void ProcIPsecEspPacketRecv(IKE_SERVER *ike, UDPPACKET *p)
 							UINTToIP(&c->TunnelModeServerIP, pkt->L3.IPv4Header->DstIP);
 							UINTToIP(&c->TunnelModeClientIP, pkt->L3.IPv4Header->SrcIP);
 
-							if (IPV4_GET_OFFSET(pkt->L3.IPv4Header) == 0)
+							// IKEv2: deliver the whole inner packet to the
+							// IPC virtual host of the client
+							if (c->V2Ipc != NULL)
+							{
+								if (IPV4_GET_OFFSET(pkt->L3.IPv4Header) == 0)
+								{
+									IPCSendIPv4(c->V2Ipc, dec_data, dec_size);
+								}
+							}
+							else if (IPV4_GET_OFFSET(pkt->L3.IPv4Header) == 0)
 							{
 								if ((IPV4_GET_FLAGS(pkt->L3.IPv4Header) & 0x01) == 0)
 								{
@@ -5564,6 +5574,45 @@ void ProcessIKEInterrupts(IKE_SERVER *ike)
 			c->StartQuickModeAsSoon = false;
 		}
 
+		if (c->V2Ipc != NULL)
+		{
+			// IKEv2 user plane: pump the IPC virtual host and send the
+			// packets destined to the client through its outbound ESP SA
+			if (IsIPCConnected(c->V2Ipc) == false)
+			{
+				// The hub session is gone: tear the client down
+				IPsecLog(ike, c, NULL, NULL, "LI2_IPC_DISCONNECTED");
+
+				IkeV2MarkIkeClientDeleted(ike, c);
+			}
+			else
+			{
+				BLOCK *block;
+
+				IPCProcessL3Events(c->V2Ipc);
+
+				// IPCSendL2 defers the actual transmission of the frames
+				// queued by the IPC until its tube flush list is flushed
+				IPCProcessInterrupts(c->V2Ipc);
+
+				while ((block = IPCRecvIPv4(c->V2Ipc)) != NULL)
+				{
+					if (c->CurrentIpSecSaSend != NULL)
+					{
+						// Standard IKEv2 tunnel mode: the ESP payload is the
+						// original IP packet itself. IPsecSendPacketByIPsecSa
+						// would add another IP header (IKEv1 tunnel
+						// semantics), so send through the inner function
+						// with the IP-in-IP next header number.
+						IPsecSendPacketByIPsecSaInner(ike, c->CurrentIpSecSaSend,
+							block->Buf, block->Size, 4);		// IANA protocol number for IPv4 (IPIP)
+					}
+
+					FreeBlock(block);
+				}
+			}
+		}
+
 		if (need_qm)
 		{
 			if (c->StartQuickModeAsSoon || ((c->LastQuickModeStartTick + (UINT64)IKE_QUICKMODE_START_INTERVAL) <= ike->Now))
@@ -5731,6 +5780,14 @@ void FreeIkeClient(IKE_SERVER *ike, IKE_CLIENT *c)
 	if (c->EtherIP != NULL)
 	{
 		ReleaseEtherIPServer(c->EtherIP);
+	}
+
+	// IKEv2 IPC session
+	if (c->V2IpcAsync != NULL)
+	{
+		FreeIPCAsync(c->V2IpcAsync);
+		c->V2IpcAsync = NULL;
+		c->V2Ipc = NULL;
 	}
 
 	FreeBuf(c->SendID1_Buf);

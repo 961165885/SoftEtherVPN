@@ -1859,7 +1859,10 @@ LI2_EAP_UNSUPPORTED		The client requested EAP authentication which is not suppor
 LI2_SK_ICV_ERROR		The integrity check of a received IKEv2 encrypted payload failed.
 LI2_INVALID_PACKET		A broken IKEv2 packet was received.
 LI2_CREATE_CHILD_SA_REJECTED	The IKEv2 CREATE_CHILD_SA request was rejected. Rekeying and additional Child SAs are not supported yet.
-LI2_DEBUG			IKEv2 debug: %u %u %u %u
+LI2_EAP_STARTED		The IKEv2 EAP exchange started. Client ID: %S
+LI2_IPC_CONNECTED	The IKEv2 IPC session into the virtual hub was established. Virtual IP: %S
+LI2_IPC_FAILED		The IKEv2 IPC session into the virtual hub could not be established. Username: %S
+LI2_IPC_DISCONNECTED	The IKEv2 IPC session of this client was disconnected.
 LI_NUM_IPSEC_SA			The number of still-alive IPsec SAs was %u.
 LI_NUM_IKE_SA			The number of still-alive IKE SAs was %u.
 LI_NUM_IKE_CLIENTS		The number of still-alive IPsec Clients was %u.
