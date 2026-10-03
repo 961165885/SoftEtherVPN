@@ -55,6 +55,14 @@ bool IkeV2SelectChildSaProposal(IKE_SERVER *ike, IKE_PACKET_PAYLOAD *sa_payload,
 IKE_PACKET_PAYLOAD *IkeV2BuildIkeSaResponseProposal(IKE_SERVER *ike, IKE_SA_TRANSFORM_SETTING *setting);
 IKE_PACKET_PAYLOAD *IkeV2BuildChildSaResponseProposal(IKE_SERVER *ike, IPSEC_SA_TRANSFORM_SETTING *setting, UINT our_spi);
 
+// ESP anti-replay window (RFC 4303 section 3.4.3)
+bool IkeV2EspReplayCheck(IPSECSA *sa, UINT seq);
+void IkeV2EspReplayUpdate(IPSECSA *sa, UINT seq);
+
+// Certificate signature AUTH (RFC 7427 digital signature method)
+IKE_PACKET_PAYLOAD *IkeV2BuildSignatureAuth(IKE_SERVER *ike, IKE_SA *sa, BUF *real_message, BUF *nonce,
+											void *skp, UINT skp_size, BUF *id_body, bool prefer_sha256);
+
 // Utility
 IKE_PACKET_PAYLOAD *IkeV2GetNotifyPayload(IKE_PACKET *pr, UINT notify_type, UINT index);
 void IkeV2CheckNatD(IKE_SERVER *ike, IKE_PACKET *pr, UDPPACKET *p, IKE_PACKET *header, IKE_SA *sa);

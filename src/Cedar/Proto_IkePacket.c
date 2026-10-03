@@ -488,6 +488,14 @@ BUF *IkeBuildPayload(IKE_PACKET_PAYLOAD *p)
 		b = IkeBuildIdPayload(&p->Payload.Id);
 		break;
 
+	case IKEV2_PAYLOAD_CERT:				// Certificate payload (IKEv2)
+		b = IkeBuildCertPayload(&p->Payload.Cert);
+		break;
+
+	case IKEV2_PAYLOAD_CERTREQ:			// Certificate request payload (IKEv2)
+		b = IkeBuildCertRequestPayload(&p->Payload.CertRequest);
+		break;
+
 	case IKEV2_PAYLOAD_NOTIFY:			// Notification payload (IKEv2)
 		b = IkeV2BuildNoticePayload(&p->Payload.Notice);
 		break;
@@ -1770,6 +1778,14 @@ void IkeFreePayload(IKE_PACKET_PAYLOAD *p)
 	case IKEV2_PAYLOAD_ID_INITIATOR:		// IDi payload (IKEv2)
 	case IKEV2_PAYLOAD_ID_RESPONDER:		// IDr payload (IKEv2)
 		IkeFreeIdPayload(&p->Payload.Id);
+		break;
+
+	case IKEV2_PAYLOAD_CERT:				// Certificate payload (IKEv2)
+		IkeFreeCertPayload(&p->Payload.Cert);
+		break;
+
+	case IKEV2_PAYLOAD_CERTREQ:			// Certificate request payload (IKEv2)
+		IkeFreeCertRequestPayload(&p->Payload.CertRequest);
 		break;
 
 	case IKEV2_PAYLOAD_NOTIFY:				// Notification payload (IKEv2)

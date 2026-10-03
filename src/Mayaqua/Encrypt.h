@@ -386,6 +386,7 @@ bool RsaCheck();
 bool RsaCheckEx();
 bool RsaSign(void *dst, void *src, UINT size, K *k);
 bool RsaSignEx(void *dst, void *src, UINT size, K *k, UINT bits);
+bool RsaSignSha256(void *dst, UINT dst_size, UINT *sign_size, void *src, UINT size, K *k);
 bool HashForSign(void *dst, UINT dst_size, void *src, UINT src_size);
 bool RsaVerify(void *data, UINT data_size, void *sign, K *k);
 bool RsaVerifyEx(void *data, UINT data_size, void *sign, K *k, UINT bits);

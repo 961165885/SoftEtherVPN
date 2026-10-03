@@ -51,6 +51,9 @@
 #define	IKEV2_IPC_POSTFIX					"IKEV2"	// IPC session postfix
 #define	IKEV2_IPC_MSS						1380	// TCP MSS announced to the IPC virtual host
 
+// IKEv2 ESP anti-replay window size (RFC 4303 section 3.4.3)
+#define	IKEV2_ESP_REPLAY_WINDOW_SIZE		128
+
 // ESP
 #define	IKE_ESP_HASH_SIZE					12	// The hash size for the ESP packet
 
@@ -272,6 +275,8 @@ struct IKE_SA
 	BUF *V2ChildSaBody;							// Raw SAi2 payload body received in the first IKE_AUTH
 	BUF *V2TsiBody;								// Raw TSi payload body received in the first IKE_AUTH
 	BUF *V2TsrBody;								// Raw TSr payload body received in the first IKE_AUTH
+	BUF *V2IdrBody;								// Raw IDr payload body sent in the first IKE_AUTH response (feeds the final AUTH)
+	bool V2SignatureHashNotified;				// Client sent the SIGNATURE_HASH_ALGORITHMS notify (supports RFC 7427 signatures)
 };
 
 // IPsec SA
@@ -312,6 +317,10 @@ struct IPSECSA
 	UCHAR SKEYID_d[IKE_MAX_HASH_SIZE];
 	UCHAR SKEYID_a[IKE_MAX_HASH_SIZE];
 	IKE_HASH *SKEYID_Hash;
+
+	// IKEv2 ESP anti-replay window (only on the client -> server SA)
+	UINT V2ReplayLastSeq;						// Highest authenticated sequence number (0 = none)
+	UCHAR V2ReplayWindow[IKEV2_ESP_REPLAY_WINDOW_SIZE / 8];	// Bitmap: bit k = sequence (last - k) seen
 };
 
 // IKE server

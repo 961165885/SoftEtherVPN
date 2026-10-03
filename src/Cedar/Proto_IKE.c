@@ -493,6 +493,17 @@ void ProcIPsecEspPacketRecv(IKE_SERVER *ike, UDPPACKET *p)
 		return;
 	}
 
+	// IKEv2: reject sequence numbers outside the anti-replay window before
+	// spending crypto work on the packet (RFC 4303 section 3.4.3)
+	if (ipsec_sa->ServerToClient == false &&
+		ipsec_sa->IkeSa != NULL && ipsec_sa->IkeSa->MajorVersion == IKE_MAJOR_VERSION_2)
+	{
+		if (IkeV2EspReplayCheck(ipsec_sa, seq) == false)
+		{
+			return;
+		}
+	}
+
 	block_size = ipsec_sa->TransformSetting.Crypto->BlockSize;
 	hash_size = IKE_ESP_HASH_SIZE;
 
@@ -514,6 +525,14 @@ void ProcIPsecEspPacketRecv(IKE_SERVER *ike, UDPPACKET *p)
 	{
 		//Debug("IPsec SA 0x%X: Invalid HMAC Value.\n", ipsec_sa->Spi);
 		return;
+	}
+
+	// IKEv2: the sequence number is now authenticated: advance the
+	// anti-replay window (only after the integrity check passed)
+	if (ipsec_sa->ServerToClient == false &&
+		ipsec_sa->IkeSa != NULL && ipsec_sa->IkeSa->MajorVersion == IKE_MAJOR_VERSION_2)
+	{
+		IkeV2EspReplayUpdate(ipsec_sa, seq);
 	}
 
 	// Get the payload data
@@ -1163,7 +1182,12 @@ void MarkIkeSaAsDeleted(IKE_SERVER *ike, IKE_SA *sa)
 
 	Debug("IKE SA %I64u - %I64u has been marked as being deleted.\n", sa->InitiatorCookie, sa->ResponderCookie);
 
-	SendDeleteIkeSaPacket(ike, sa->IkeClient, sa->InitiatorCookie, sa->ResponderCookie);
+	if (sa->MajorVersion != IKE_MAJOR_VERSION_2)
+	{
+		// IKEv1 only: an IKEv2 peer cannot parse the v1 delete notify and
+		// the v2 SA has no v1 CryptoKey to encrypt it with
+		SendDeleteIkeSaPacket(ike, sa->IkeClient, sa->InitiatorCookie, sa->ResponderCookie);
+	}
 
 	IPsecLog(ike, NULL, sa, NULL, "LI_DELETE_IKE_SA");
 }
@@ -1188,7 +1212,11 @@ void MarkIPsecSaAsDeleted(IKE_SERVER *ike, IPSECSA *sa)
 
 	Debug("IPsec SA 0x%X has been marked as being deleted.\n", sa->Spi);
 
-	SendDeleteIPsecSaPacket(ike, sa->IkeClient, sa->Spi);
+	if (sa->IkeSa == NULL || sa->IkeSa->MajorVersion != IKE_MAJOR_VERSION_2)
+	{
+		// IKEv1 only: see the comment in MarkIkeSaAsDeleted
+		SendDeleteIPsecSaPacket(ike, sa->IkeClient, sa->Spi);
+	}
 
 	IPsecLog(ike, NULL, NULL, sa, "LI_DELETE_IPSEC_SA");
 }
@@ -5848,6 +5876,10 @@ void FreeIkeSa(IKE_SA *sa)
 	FreeBuf(sa->V2SaInitRequestData);
 	FreeBuf(sa->V2SaInitResponseData);
 	FreeBuf(sa->V2IdiBody);
+	FreeBuf(sa->V2ChildSaBody);
+	FreeBuf(sa->V2TsiBody);
+	FreeBuf(sa->V2TsrBody);
+	FreeBuf(sa->V2IdrBody);
 
 	Free(sa);
 }

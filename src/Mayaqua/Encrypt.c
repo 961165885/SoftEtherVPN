@@ -2469,6 +2469,55 @@ bool RsaSignEx(void *dst, void *src, UINT size, K *k, UINT bits)
 	return true;
 }
 
+// Generation of signature data by RSA PKCS#1 v1.5 with SHA-256
+bool RsaSignSha256(void *dst, UINT dst_size, UINT *sign_size, void *src, UINT size, K *k)
+{
+	UCHAR hash[SHA256_SIZE];
+	UCHAR di[sizeof(hash) + 19];
+	RSA *rsa;
+	int r;
+	static const UCHAR di_prefix[] =
+	{
+		0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86,
+		0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05,
+		0x00, 0x04, 0x20,
+	};
+	// Validate arguments
+	if (dst == NULL || src == NULL || k == NULL || dst_size == 0 ||
+		EVP_PKEY_base_id(k->pkey) != EVP_PKEY_RSA)
+	{
+		return false;
+	}
+
+	Zero(dst, dst_size);
+
+	Sha2_256(hash, src, size);
+
+	Copy(di, di_prefix, sizeof(di_prefix));
+	Copy(di + sizeof(di_prefix), hash, sizeof(hash));
+
+	rsa = EVP_PKEY_get0_RSA(k->pkey);
+
+	if (rsa == NULL)
+	{
+		return false;
+	}
+
+	r = RSA_private_encrypt(sizeof(di), di, dst, rsa, RSA_PKCS1_PADDING);
+
+	if (r <= 0)
+	{
+		return false;
+	}
+
+	if (sign_size != NULL)
+	{
+		*sign_size = (UINT)r;
+	}
+
+	return true;
+}
+
 // Generation of signature data by SHA-1
 bool HashForSign(void *dst, UINT dst_size, void *src, UINT src_size)
 {
