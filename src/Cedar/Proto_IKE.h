@@ -129,6 +129,10 @@ struct IPSEC_SA_TRANSFORM_SETTING
 	UINT SpiServerToClient;
 	UINT CapsuleMode;
 	bool OnlyCapsuleModeIsInvalid;
+	// ESP authentication tag length in bytes for this SA
+	// (12 for the 96 bit algorithms, 16 for SHA2-256-128).
+	// 0 falls back to the IKEv1 default of IKE_ESP_HASH_SIZE.
+	UINT IcvSize;
 };
 
 // Function support information

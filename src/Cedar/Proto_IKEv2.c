@@ -1315,7 +1315,7 @@ bool IkeV2SelectChildSaProposal(IKE_SERVER *ike, IKE_PACKET_PAYLOAD *sa_payload,
 			IKE_CRYPTO *crypto = NULL;
 			UINT crypto_id = 0, crypto_key_size = 0;
 			IKE_HASH *integ = NULL;
-			UINT integ_id = 0;
+			UINT integ_id = 0, integ_icv_size = 0;
 
 			for (j = 0; j < LIST_NUM(proposal->TransformList); j++)
 			{
@@ -1353,18 +1353,19 @@ bool IkeV2SelectChildSaProposal(IKE_SERVER *ike, IKE_PACKET_PAYLOAD *sa_payload,
 				}
 				else if (t->TransformType == IKEV2_TRANSFORM_TYPE_INTEG)
 				{
-					// The current ESP data path always truncates the
-					// authentication tag to 12 bytes, so only the 96 bit
-					// algorithms are accepted for now
-					if (t->TransformId == IKEV2_AUTH_HMAC_SHA1_96 && integ == NULL)
+					// Accept the 96 bit algorithms plus SHA2-256-128, whose
+					// 16 byte tag the ESP data path handles through
+					// TransformSetting.IcvSize. Apple clients no longer
+					// propose SHA1-96, so SHA2-256 support is required for
+					// them to negotiate a CHILD_SA at all.
+					UINT icv_size = 0;
+					IKE_HASH *h = IkeV2IntegIdToHash(ike, t->TransformId, &icv_size);
+
+					if (h != NULL && integ == NULL)
 					{
-						integ = GetIkeHash(ike->Engine, true, IKE_P2_HMAC_SHA1_96);
-						integ_id = IKEV2_AUTH_HMAC_SHA1_96;
-					}
-					else if (t->TransformId == IKEV2_AUTH_HMAC_MD5_96 && integ == NULL)
-					{
-						integ = GetIkeHash(ike->Engine, true, IKE_P2_HMAC_MD5_96);
-						integ_id = IKEV2_AUTH_HMAC_MD5_96;
+						integ = h;
+						integ_id = t->TransformId;
+						integ_icv_size = icv_size;
 					}
 				}
 			}
@@ -1378,6 +1379,7 @@ bool IkeV2SelectChildSaProposal(IKE_SERVER *ike, IKE_PACKET_PAYLOAD *sa_payload,
 				setting->CryptoKeySize = crypto_key_size;
 				setting->Hash = integ;
 				setting->HashId = integ_id;
+				setting->IcvSize = (integ_icv_size == 0 ? IKE_ESP_HASH_SIZE : integ_icv_size);
 				setting->Dh = NULL;
 				setting->LifeSeconds = IKEV2_CHILD_LIFETIME_DEFAULT;
 				setting->LifeKilobytes = INFINITE;

@@ -206,8 +206,10 @@ void IPsecSendPacketByIPsecSaInner(IKE_SERVER *ike, IPSECSA *sa, UCHAR *data, UI
 	}
 	size_of_padding = encrypted_payload_size - data_size - 2;
 
-	// Calculate the size of the ESP packet
-	esp_size = sizeof(UINT) * 2 + sa->TransformSetting.Crypto->BlockSize + encrypted_payload_size + IKE_ESP_HASH_SIZE;
+	// Calculate the size of the ESP packet. The authentication tag length
+	// depends on the negotiated integrity algorithm (12 or 16 bytes).
+	esp_size = sizeof(UINT) * 2 + sa->TransformSetting.Crypto->BlockSize + encrypted_payload_size +
+		(sa->TransformSetting.IcvSize == 0 ? IKE_ESP_HASH_SIZE : sa->TransformSetting.IcvSize);
 
 	// Build the ESP packet
 	esp = Malloc(esp_size + IKE_MAX_HASH_SIZE);
@@ -505,7 +507,8 @@ void ProcIPsecEspPacketRecv(IKE_SERVER *ike, UDPPACKET *p)
 	}
 
 	block_size = ipsec_sa->TransformSetting.Crypto->BlockSize;
-	hash_size = IKE_ESP_HASH_SIZE;
+	// The received tag length follows the negotiated integrity algorithm
+	hash_size = (ipsec_sa->TransformSetting.IcvSize == 0 ? IKE_ESP_HASH_SIZE : ipsec_sa->TransformSetting.IcvSize);
 
 	// Get the IV
 	if (src_size < (sizeof(UINT) * 2 + block_size + hash_size + block_size))
