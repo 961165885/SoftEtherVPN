@@ -1116,9 +1116,9 @@ SVC_VPNBRIDGE_DESCRIPT	Layanan ini mengelola proses-proses dari SoftEther VPN Br
 
 
 # Service definition (SoftEther VPN Client)
-SVC_SEVPNCLIENTDEV_NAME		sevpnclientdev
-SVC_SEVPNCLIENTDEV_TITLE		SoftEther VPN Client Developer Edition
-SVC_SEVPNCLIENTDEV_DESCRIPT	Layanan ini mengelola driver perangkat Virtual Network Adapter dan layanan koneksi untuk SoftEther VPN Client. Ketika layanan ini dihentikan, tidak akan memungkinkan untuk menggunakan SoftEther VPN Client di komputer ini untuk menghubungkan ke SoftEther VPN Server.
+SVC_DENOVCLIENT_NAME		denovclient
+SVC_DENOVCLIENT_TITLE		SoftEther VPN Client Developer Edition
+SVC_DENOVCLIENT_DESCRIPT	Layanan ini mengelola driver perangkat Virtual Network Adapter dan layanan koneksi untuk SoftEther VPN Client. Ketika layanan ini dihentikan, tidak akan memungkinkan untuk menggunakan SoftEther VPN Client di komputer ini untuk menghubungkan ke SoftEther VPN Server.
 
 
 # Service Definition (SoftEther VPN Server)

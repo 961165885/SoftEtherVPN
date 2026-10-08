@@ -1116,9 +1116,9 @@ SVC_VPNBRIDGE_DESCRIPT	This manages the processes of SoftEther VPN Bridge. SoftE
 
 
 # Service definition (SoftEther VPN Client)
-SVC_SEVPNCLIENTDEV_NAME		sevpnclientdev
-SVC_SEVPNCLIENTDEV_TITLE		SoftEther VPN Client Developer Edition
-SVC_SEVPNCLIENTDEV_DESCRIPT	This manages the Virtual Network Adapter device driver and connection service for the SoftEther VPN Client. When this service is stopped, it will not be possible to use SoftEther VPN Client on this computer to connect to a SoftEther VPN Server.
+SVC_DENOVCLIENT_NAME		denovclient
+SVC_DENOVCLIENT_TITLE		Deno VPN Client Service
+SVC_DENOVCLIENT_DESCRIPT		Deno VPN client service: manages the virtual network adapter device driver and the VPN tunnel connections of the Deno VPN app. The app cannot connect while this service is stopped.
 
 
 # Service Definition (SoftEther VPN Server)

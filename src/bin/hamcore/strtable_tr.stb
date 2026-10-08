@@ -1116,9 +1116,9 @@ SVC_VPNBRIDGE_DESCRIPT	Bu SoftEther VPN Köprüsü'nün işlemlerini yönetir. S
 
 
 # Service definition (SoftEther VPN Client)
-SVC_SEVPNCLIENTDEV_NAME		sevpnclientdev
-SVC_SEVPNCLIENTDEV_TITLE		SoftEther VPN İstemcisi Geliştirici Sürümü
-SVC_SEVPNCLIENTDEV_DESCRIPT	Bu, SoftEther VPN İstemcisi için Sanal Ağ Bağdaştırıcısı aygıt sürücüsünü ve bağlantı hizmetini yönetir. Bu hizmet durdurulduğunda, bir SoftEther VPN Sunucusuna bağlanmak için bu bilgisayarda SoftEther VPN İstemcisini kullanmak mümkün olmayacaktır.
+SVC_DENOVCLIENT_NAME		denovclient
+SVC_DENOVCLIENT_TITLE		SoftEther VPN İstemcisi Geliştirici Sürümü
+SVC_DENOVCLIENT_DESCRIPT	Bu, SoftEther VPN İstemcisi için Sanal Ağ Bağdaştırıcısı aygıt sürücüsünü ve bağlantı hizmetini yönetir. Bu hizmet durdurulduğunda, bir SoftEther VPN Sunucusuna bağlanmak için bu bilgisayarda SoftEther VPN İstemcisini kullanmak mümkün olmayacaktır.
 
 
 # Service Definition (SoftEther VPN Server)

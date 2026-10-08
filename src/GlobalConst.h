@@ -33,14 +33,14 @@
 //// Default Port Number
 
 #define	GC_DEFAULT_PORT		5555
-#define	GC_CLIENT_CONFIG_PORT	9931
-#define	GC_CLIENT_NOTIFY_PORT	9984
+#define	GC_CLIENT_CONFIG_PORT	39931	// Deno VPN: moved from 9931 to coexist with an official SoftEther client install
+#define	GC_CLIENT_NOTIFY_PORT	39984	// Deno VPN: moved from 9984 likewise
 
 
 //// Software Name
 
 #define	GC_SVC_NAME_VPNSERVER		"SEVPNSERVERDEV"
-#define	GC_SVC_NAME_VPNCLIENT		"SEVPNCLIENTDEV"
+#define	GC_SVC_NAME_VPNCLIENT		"DENOVCLIENT"	// Deno VPN service key (strtable SVC_DENOVCLIENT_*)
 #define	GC_SVC_NAME_VPNBRIDGE		"SEVPNBRIDGEDEV"
 
 
