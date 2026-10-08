@@ -5892,6 +5892,24 @@ void FreeIkeSa(IKE_SA *sa)
 	FreeBuf(sa->V2TsrBody);
 	FreeBuf(sa->V2IdrBody);
 
+	// IKEv2 fragmentation (RFC 7383) buffers
+	{
+		UINT i;
+
+		for (i = 0; i < IKEV2_MAX_FRAGMENTS; i++)
+		{
+			if (sa->V2FragPlaintexts[i] != NULL)
+			{
+				FreeBuf(sa->V2FragPlaintexts[i]);
+			}
+
+			if (sa->V2FragSendBuffers[i] != NULL)
+			{
+				FreeBuf(sa->V2FragSendBuffers[i]);
+			}
+		}
+	}
+
 	Free(sa);
 }
 

@@ -38,6 +38,7 @@
 #include "Server.h"
 
 #include "Mayaqua/Memory.h"
+#include "Mayaqua/FileIO.h"
 #include "Mayaqua/Object.h"
 #include "Mayaqua/Str.h"
 #include "Mayaqua/Table.h"
@@ -620,6 +621,20 @@ void IkeV2ProcSaInit(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, IKE_CLIE
 	}
 
 	Add(payload_list, IkeNewDataPayload(IKEV2_PAYLOAD_NONCE, sa->ResponderRand->Buf, sa->ResponderRand->Size));
+
+	// Echo the IKE fragmentation support (RFC 7383): fragmented messages may
+	// only be exchanged once both peers announced it in IKE_SA_INIT. Large
+	// IKE_AUTH responses (certificate chains) otherwise end up IP-fragmented,
+	// which regularly gets dropped on NAT paths.
+	sa->V2PeerFragSupported = (IkeV2GetNotifyPayload(pr, IKEV2_NOTIFY_IKEV2_FRAGMENTATION_SUPPORTED, 0) != NULL);
+
+	IPsecLog(ike, c, sa, NULL, "LI2_FRAG_PEER_SUPPORTED", sa->V2PeerFragSupported ? _UU("L_YES") : _UU("L_NO"));
+
+	if (sa->V2PeerFragSupported)
+	{
+		Add(payload_list, IkeV2NewNotifyPayload(0, IKEV2_NOTIFY_IKEV2_FRAGMENTATION_SUPPORTED,
+			NULL, 0, NULL, 0));
+	}
 
 	// NAT detection notifies: hashes of both endpoints as seen by us.
 	// From this point on the responder SPI is known and used by both sides.
@@ -1565,6 +1580,180 @@ static bool IkeV2CompareNotifyData(IKE_PACKET_PAYLOAD *notify_payload, BUF *hash
 // Decrypt the Encrypted (SK) payload of a received request in place.
 // On success header->PayloadList is replaced with the decrypted inner
 // payload list. The payload list passed in the header is consumed either way.
+// Handle one datagram of an incoming RFC 7383 fragmented message. The
+// fragment is verified and decrypted on arrival; once all fragments of the
+// message are present the plaintexts are concatenated and parsed, and the
+// resulting payload list replaces the (raw SKF) payload list of the header so
+// that the regular IKE_AUTH / INFORMATIONAL handlers proceed unchanged.
+// Returns false while the message is still incomplete (or on any error).
+static bool IkeV2RecvEncryptedFragments(IKE_SERVER *ike, IKE_SA *sa, UDPPACKET *p, IKE_PACKET *header)
+{
+	UCHAR *dp;
+	UINT skf_size, frag_num, frag_total, iv_size, icv_size, cipher_size, i;
+	UCHAR icv_calc[IKE_MAX_HASH_SIZE];
+	BUF *dec = NULL, *whole = NULL;
+	IKE_CRYPTO_PARAM cp;
+	LIST *inner = NULL;
+	bool ret = false;
+	// Validate arguments
+	if (ike == NULL || sa == NULL || p == NULL || header == NULL)
+	{
+		return false;
+	}
+
+	dp = (UCHAR *)p->Data;
+
+	if (p->Size < sizeof(IKE_HEADER) + 8)
+	{
+		return false;
+	}
+
+	skf_size = (UINT)(((UINT)dp[sizeof(IKE_HEADER) + 2] << 8) | (UINT)dp[sizeof(IKE_HEADER) + 3]);
+	frag_num = (UINT)(((UINT)dp[sizeof(IKE_HEADER) + 4] << 8) | (UINT)dp[sizeof(IKE_HEADER) + 5]);
+	frag_total = (UINT)(((UINT)dp[sizeof(IKE_HEADER) + 6] << 8) | (UINT)dp[sizeof(IKE_HEADER) + 7]);
+
+	if (skf_size < 9 || skf_size != header->MessageSize - sizeof(IKE_HEADER))
+	{
+		return false;
+	}
+
+	if (frag_num == 0 || frag_total == 0 || frag_num > frag_total || frag_total > IKEV2_MAX_FRAGMENTS)
+	{
+		return false;
+	}
+
+	if (frag_num == 1)
+	{
+		// A new fragmented message starts: reset any stale reassembly state
+		for (i = 0; i < IKEV2_MAX_FRAGMENTS; i++)
+		{
+			if (sa->V2FragPlaintexts[i] != NULL)
+			{
+				FreeBuf(sa->V2FragPlaintexts[i]);
+				sa->V2FragPlaintexts[i] = NULL;
+			}
+		}
+		sa->V2FragMessageId = header->MessageId;
+		sa->V2FragTotal = frag_total;
+		sa->V2FragCount = 0;
+		sa->V2FragFirstPayloadType = dp[sizeof(IKE_HEADER)];
+	}
+
+	if (sa->V2FragMessageId != header->MessageId || sa->V2FragTotal != frag_total)
+	{
+		return false;
+	}
+
+	if (sa->V2FragPlaintexts[frag_num - 1] != NULL)
+	{
+		// Duplicate fragment: the retransmission timer of the peer fired
+		return false;
+	}
+
+	iv_size = sa->TransformSetting.Crypto->BlockSize;
+	icv_size = sa->TransformSetting.V2IntegIcvSize;
+	cipher_size = skf_size - 8 - iv_size - icv_size;
+
+	if (cipher_size == 0 || cipher_size % iv_size != 0)
+	{
+		return false;
+	}
+
+	// Verify this fragment's own ICV over its whole datagram
+	IkeHMac(sa->TransformSetting.Hash, icv_calc, sa->V2SkAi, sa->TransformSetting.Hash->HashSize,
+		p->Data, p->Size - icv_size);
+
+	if (Cmp(icv_calc, dp + p->Size - icv_size, icv_size) != 0)
+	{
+		IPsecLog(ike, sa->IkeClient, sa, NULL, "LI2_SK_ICV_ERROR");
+		return false;
+	}
+
+	Zero(&cp, sizeof(cp));
+	Copy(cp.Iv, dp + sizeof(IKE_HEADER) + 8, iv_size);
+	cp.Key = sa->V2KeyEi;
+
+	dec = IkeDecrypt(dp + sizeof(IKE_HEADER) + 8 + iv_size, cipher_size, &cp);
+
+	if (dec == NULL)
+	{
+		return false;
+	}
+
+	sa->V2FragPlaintexts[frag_num - 1] = dec;
+	sa->V2FragCount++;
+	sa->LastCommTick = ike->Now;
+
+	if (sa->V2FragCount < sa->V2FragTotal)
+	{
+		return false;
+	}
+
+	// All fragments received: concatenate the plaintexts. The padding and
+	// the pad length byte live at the end of the last fragment only
+	whole = NewBuf();
+
+	for (i = 0; i < sa->V2FragTotal; i++)
+	{
+		if (sa->V2FragPlaintexts[i] == NULL)
+		{
+			goto cleanup;
+		}
+		WriteBufBuf(whole, sa->V2FragPlaintexts[i]);
+	}
+
+	if (whole->Size < 1)
+	{
+		goto cleanup;
+	}
+
+	{
+		UINT pad_len = ((UCHAR *)whole->Buf)[whole->Size - 1];
+
+		if (pad_len + 1 > whole->Size)
+		{
+			goto cleanup;
+		}
+
+		whole->Size -= pad_len + 1;
+	}
+
+	inner = IkeParsePayloadListEx(whole->Buf, whole->Size, sa->V2FragFirstPayloadType, NULL);
+
+	if (inner == NULL)
+	{
+		goto cleanup;
+	}
+
+	IkeFreePayloadList(header->PayloadList);
+	header->PayloadList = inner;
+	inner = NULL;
+	ret = true;
+
+cleanup:
+	// Reassembly state is consumed: free the plaintexts
+	for (i = 0; i < IKEV2_MAX_FRAGMENTS; i++)
+	{
+		if (sa->V2FragPlaintexts[i] != NULL)
+		{
+			FreeBuf(sa->V2FragPlaintexts[i]);
+			sa->V2FragPlaintexts[i] = NULL;
+		}
+	}
+	sa->V2FragMessageId = 0;
+	sa->V2FragTotal = 0;
+	sa->V2FragCount = 0;
+
+	FreeBuf(whole);
+
+	if (inner != NULL)
+	{
+		IkeFreePayloadList(inner);
+	}
+
+	return ret;
+}
+
 bool IkeV2RecvEncrypted(IKE_SERVER *ike, IKE_SA *sa, UDPPACKET *p, IKE_PACKET *header)
 {
 	BUF *sk_body = NULL;
@@ -1599,6 +1788,14 @@ bool IkeV2RecvEncrypted(IKE_SERVER *ike, IKE_SA *sa, UDPPACKET *p, IKE_PACKET *h
 	if (header->MessageSize < sizeof(IKE_HEADER) + 4 || header->MessageSize > p->Size)
 	{
 		return false;
+	}
+
+	// RFC 7383 fragmented messages arrive as multiple datagrams, each with a
+	// single SKF payload: handle them separately and only continue here once
+	// the reassembled payload list replaced header->PayloadList
+	if (((UCHAR *)p->Data)[sizeof(IKE_HEADER)] == IKEV2_PAYLOAD_SKF)
+	{
+		return IkeV2RecvEncryptedFragments(ike, sa, p, header);
 	}
 
 	{
@@ -1705,6 +1902,135 @@ cleanup:
 // Send an encrypted response: wrap the payload list into an SK payload,
 // cache the raw bytes for retransmission and send the packet.
 // This function takes the ownership of payload_list.
+// Send a large encrypted response as RFC 7383 Encrypted Fragment (SKF)
+// datagrams so that no UDP packet exceeds the path MTU. Only used when the
+// peer announced N(IKEV2_FRAGMENTATION_SUPPORTED) in IKE_SA_INIT. The
+// fragment datagrams are cached for retransmission (sa->V2FragSendBuffers)
+// while sa->SendBuffer stays NULL.
+static void IkeV2SendEncryptedResponseFragments(IKE_SERVER *ike, IKE_SA *sa, UCHAR exchange_type,
+	UINT message_id, LIST *payload_list, BUF *inner)
+{
+	UINT blocksize, icv_size, first_payload_type, chunk, frag_total, i;
+	// Validate arguments
+	if (ike == NULL || sa == NULL || inner == NULL || inner->Size == 0)
+	{
+		return;
+	}
+
+	blocksize = sa->TransformSetting.Crypto->BlockSize;
+	icv_size = sa->TransformSetting.V2IntegIcvSize;
+	first_payload_type = IkeGetFirstPayloadType(payload_list);
+
+	chunk = IKEV2_FRAG_CHUNK;
+	frag_total = (inner->Size + chunk - 1) / chunk;
+
+	if (frag_total == 0 || frag_total > IKEV2_MAX_FRAGMENTS)
+	{
+		return;
+	}
+
+	// Drop any previously cached fragments
+	for (i = 0; i < IKEV2_MAX_FRAGMENTS; i++)
+	{
+		if (sa->V2FragSendBuffers[i] != NULL)
+		{
+			FreeBuf(sa->V2FragSendBuffers[i]);
+			sa->V2FragSendBuffers[i] = NULL;
+		}
+	}
+	sa->V2FragSendCount = 0;
+
+	if (sa->SendBuffer != NULL)
+	{
+		FreeBuf(sa->SendBuffer);
+		sa->SendBuffer = NULL;
+	}
+
+	for (i = 0; i < frag_total; i++)
+	{
+		UCHAR *part = ((UCHAR *)inner->Buf) + (UINT64)i * chunk;
+		UINT part_size = MIN(chunk, inner->Size - i * chunk);
+		UINT pad_len = (blocksize - ((part_size + 1) % blocksize)) % blocksize;
+		UINT plain_size = part_size + pad_len + 1;
+		UCHAR *plain;
+		UCHAR iv[IKE_MAX_BLOCK_SIZE];
+		UCHAR icv[IKE_MAX_HASH_SIZE];
+		IKE_CRYPTO_PARAM cp;
+		BUF *body, *msg;
+		IKE_HEADER h;
+		UCHAR skf_header[8];
+		UINT skf_payload_size, msg_size;
+
+		plain = Malloc(plain_size);
+		Copy(plain, part, part_size);
+		Zero(plain + part_size, pad_len);
+		plain[plain_size - 1] = (UCHAR)pad_len;
+
+		Rand(iv, blocksize);
+
+		Zero(&cp, sizeof(cp));
+		cp.Key = sa->V2KeyEr;
+		Copy(cp.Iv, iv, blocksize);
+
+		body = IkeEncrypt(plain, plain_size, &cp);
+		Free(plain);
+
+		if (body == NULL)
+		{
+			return;
+		}
+
+		skf_payload_size = sizeof(skf_header) + blocksize + body->Size + icv_size;
+		msg_size = sizeof(h) + skf_payload_size;
+
+		Zero(&h, sizeof(h));
+		h.InitiatorCookie = Endian64(sa->InitiatorCookie);
+		h.ResponderCookie = Endian64(sa->ResponderCookie);
+		h.NextPayload = IKEV2_PAYLOAD_SKF;
+		h.MajorVersion = IKE_MAJOR_VERSION_2;
+		h.MinorVersion = 0;
+		h.ExchangeType = exchange_type;
+		h.Flag = IKE_HEADER_V2_FLAG_RESPONSE;
+		h.MessageId = Endian32(message_id);
+		h.MessageSize = Endian32(msg_size);
+
+		skf_header[0] = (UCHAR)(i == 0 ? first_payload_type : 0);
+		skf_header[1] = 0;
+		skf_header[2] = (UCHAR)((skf_payload_size >> 8) & 0xff);
+		skf_header[3] = (UCHAR)(skf_payload_size & 0xff);
+		skf_header[4] = (UCHAR)((((i + 1) >> 8)) & 0xff);
+		skf_header[5] = (UCHAR)((i + 1) & 0xff);
+		skf_header[6] = (UCHAR)((frag_total >> 8) & 0xff);
+		skf_header[7] = (UCHAR)(frag_total & 0xff);
+
+		msg = NewBuf();
+		WriteBuf(msg, &h, sizeof(h));
+		WriteBuf(msg, skf_header, sizeof(skf_header));
+		WriteBuf(msg, iv, blocksize);
+		WriteBufBuf(msg, body);
+		FreeBuf(body);
+
+		IkeHMac(sa->TransformSetting.Hash, icv, sa->V2SkAr, sa->TransformSetting.Hash->HashSize,
+			msg->Buf, msg->Size);
+		WriteBuf(msg, icv, icv_size);
+
+		sa->V2FragSendBuffers[i] = msg;
+		sa->V2FragSendCount++;
+	}
+
+	sa->NextSendTick = ike->Now + (UINT64)IKE_SA_RESEND_INTERVAL;
+	AddInterrupt(ike->Interrupts, sa->NextSendTick);
+
+	for (i = 0; i < sa->V2FragSendCount; i++)
+	{
+		BUF *msg = sa->V2FragSendBuffers[i];
+
+		IkeSendUdpPacket(ike, IKE_UDP_TYPE_ISAKMP, &sa->IkeClient->ServerIP, sa->IkeClient->ServerPort,
+			&sa->IkeClient->ClientIP, sa->IkeClient->ClientPort,
+			Clone(msg->Buf, msg->Size), msg->Size);
+	}
+}
+
 void IkeV2SendEncryptedResponse(IKE_SERVER *ike, IKE_SA *sa, UCHAR exchange_type, UINT message_id, LIST *payload_list)
 {
 	BUF *inner = NULL;
@@ -1732,6 +2058,18 @@ void IkeV2SendEncryptedResponse(IKE_SERVER *ike, IKE_SA *sa, UCHAR exchange_type
 	if (inner == NULL)
 	{
 		goto cleanup;
+	}
+
+	// Large responses are sent as RFC 7383 fragments when the peer supports
+	// it: a certificate chain easily exceeds the path MTU and IP-fragmented
+	// UDP datagrams get dropped on many NAT paths
+	if (sa->V2PeerFragSupported && inner->Size > IKEV2_FRAG_MIN_PLAINTEXT)
+	{
+		IkeV2SendEncryptedResponseFragments(ike, sa, exchange_type, message_id, payload_list, inner);
+
+		FreeBuf(inner);
+		IkeFreePayloadList(payload_list);
+		return;
 	}
 
 	blocksize = sa->TransformSetting.Crypto->BlockSize;
@@ -2014,13 +2352,15 @@ IKE_PACKET_PAYLOAD *IkeV2BuildSignatureAuth(IKE_SERVER *ike, IKE_SA *sa, BUF *re
 	// ASN.1 AlgorithmIdentifier without parameters (RFC 7427 section 5.2)
 	static const UCHAR asn_sha256[] =
 	{
-		0x30, 0x0b, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01,
-		0x65, 0x03, 0x04, 0x02, 0x01,
+		// AlgorithmIdentifier: sha256WithRSAEncryption (1.2.840.113549.1.1.11) + NULL
+		0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,
+		0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00,
 	};
 	static const UCHAR asn_sha1[] =
 	{
-		0x30, 0x07, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02,
-		0x1a,
+		// AlgorithmIdentifier: sha1WithRSAEncryption (1.2.840.113549.1.1.5) + NULL
+		0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,
+		0xf7, 0x0d, 0x01, 0x01, 0x05, 0x05, 0x00,
 	};
 	const UCHAR *asn = NULL;
 	UINT asn_size = 0;
@@ -2546,35 +2886,79 @@ static IKE_PACKET_PAYLOAD *IkeV2NewCpReplyPayload(IPC_ASYNC *a)
 	return IkeV2NewCpPayload(IKEV2_CP_CFG_REPLY, attrs);
 }
 
-// Build the IDr payload body: our own address (same on every IKE_AUTH response)
+// Build the IDr payload body. When a server certificate is configured the
+// identity it asserts (its CommonName as ID_FQDN) is used: peers such as
+// Android's platform IKE require the received IDr to equal their configured
+// remote identity (the certificate hostname) and reject an address identity
+// with AUTHENTICATION_FAILED before EAP even starts. Without a certificate
+// the responder identifies itself by its own address, which pre-shared-key
+// deployments that do not check the responder identity accept.
 static BUF *IkeV2BuildIdrBody(IKE_SERVER *ike, IKE_CLIENT *c, UCHAR *idr_type)
 {
 	UCHAR addr[16];
 	UINT addr_size;
-	BUF *idr_body;
+	BUF *idr_body = NULL;
+	X *server_x = NULL;
 
 	Zero(addr, sizeof(addr));
 
-	if (IsIP6(&c->ServerIP))
+	if (ike != NULL && ike->Cedar != NULL)
 	{
-		Copy(addr, c->ServerIP.address, 16);
-		addr_size = 16;
-		*idr_type = IKE_ID_IPV6_ADDR;
-	}
-	else
-	{
-		Copy(addr, IPV4(c->ServerIP.address), IPV4_SIZE);
-		addr_size = IPV4_SIZE;
-		*idr_type = IKE_ID_IPV4_ADDR;
+		Lock(ike->Cedar->lock);
+		{
+			if (ike->Cedar->ServerX != NULL)
+			{
+				server_x = CloneX(ike->Cedar->ServerX);
+			}
+		}
+		Unlock(ike->Cedar->lock);
 	}
 
-	idr_body = NewBuf();
+	if (server_x != NULL)
 	{
-		UCHAR id_header[4];
-		Zero(id_header, sizeof(id_header));
-		id_header[0] = *idr_type;
-		WriteBuf(idr_body, id_header, sizeof(id_header));
-		WriteBuf(idr_body, addr, addr_size);
+		if (server_x->subject_name != NULL && UniStrLen(server_x->subject_name->CommonName) > 0)
+		{
+			char cn[MAX_SIZE];
+
+			UniToStr(cn, sizeof(cn), server_x->subject_name->CommonName);
+
+			*idr_type = IKE_ID_FQDN;
+			idr_body = NewBuf();
+			{
+				UCHAR id_header[4];
+				Zero(id_header, sizeof(id_header));
+				id_header[0] = *idr_type;
+				WriteBuf(idr_body, id_header, sizeof(id_header));
+				WriteBuf(idr_body, cn, StrLen(cn));
+			}
+		}
+
+		FreeX(server_x);
+	}
+
+	if (idr_body == NULL)
+	{
+		if (IsIP6(&c->ServerIP))
+		{
+			Copy(addr, c->ServerIP.address, 16);
+			addr_size = 16;
+			*idr_type = IKE_ID_IPV6_ADDR;
+		}
+		else
+		{
+			Copy(addr, IPV4(c->ServerIP.address), IPV4_SIZE);
+			addr_size = IPV4_SIZE;
+			*idr_type = IKE_ID_IPV4_ADDR;
+		}
+
+		idr_body = NewBuf();
+		{
+			UCHAR id_header[4];
+			Zero(id_header, sizeof(id_header));
+			id_header[0] = *idr_type;
+			WriteBuf(idr_body, id_header, sizeof(id_header));
+			WriteBuf(idr_body, addr, addr_size);
+		}
 	}
 
 	return idr_body;
@@ -2827,12 +3211,28 @@ static bool IkeV2CheckMessageId(IKE_SERVER *ike, IKE_SA *sa, IKE_PACKET *header)
 		return true;
 	}
 
-	if (header->MessageId == sa->V2MsgIdRecvExpected - 1 && sa->SendBuffer != NULL)
+	if (header->MessageId == sa->V2MsgIdRecvExpected - 1 && (sa->SendBuffer != NULL || sa->V2FragSendCount > 0))
 	{
 		// Retransmission of the previous request: resend the cached response
-		IkeSendUdpPacket(ike, IKE_UDP_TYPE_ISAKMP, &sa->IkeClient->ServerIP, sa->IkeClient->ServerPort,
-			&sa->IkeClient->ClientIP, sa->IkeClient->ClientPort,
-			Clone(sa->SendBuffer->Buf, sa->SendBuffer->Size), sa->SendBuffer->Size);
+		if (sa->SendBuffer != NULL)
+		{
+			IkeSendUdpPacket(ike, IKE_UDP_TYPE_ISAKMP, &sa->IkeClient->ServerIP, sa->IkeClient->ServerPort,
+				&sa->IkeClient->ClientIP, sa->IkeClient->ClientPort,
+				Clone(sa->SendBuffer->Buf, sa->SendBuffer->Size), sa->SendBuffer->Size);
+		}
+		else
+		{
+			UINT i;
+
+			for (i = 0; i < sa->V2FragSendCount; i++)
+			{
+				BUF *msg = sa->V2FragSendBuffers[i];
+
+				IkeSendUdpPacket(ike, IKE_UDP_TYPE_ISAKMP, &sa->IkeClient->ServerIP, sa->IkeClient->ServerPort,
+					&sa->IkeClient->ClientIP, sa->IkeClient->ClientPort,
+					Clone(msg->Buf, msg->Size), msg->Size);
+			}
+		}
 		sa->LastCommTick = ike->Now;
 		return false;
 	}
@@ -3058,14 +3458,16 @@ static void IkeV2ProcIkeAuthFirst(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *hea
 
 		idr_body = IkeV2BuildIdrBody(ike, c, &idr_type);
 
-		// Server authentication method: when the peer explicitly requested
-		// our certificate (CERTREQ in the first IKE_AUTH request) and a
-		// server certificate is configured, use the digital signature method
-		// together with the CERT payload (expected by Apple and Windows in
-		// EAP mode); otherwise the shared key method. The SIGNATURE_HASH_
+		// Server authentication method: in EAP mode the responder proves its
+		// identity with the configured server certificate (digital signature
+		// AUTH + CERT payload) whenever one exists — RFC 7296 section 2.16
+		// expects the server side to authenticate with a signature, and peers
+		// such as Android's platform IKE reject a pre-shared-key AUTH in this
+		// exchange. A CERTREQ in the request is only a hint (several clients
+		// never send one), so it does not gate this path. Without a
+		// certificate the shared key method is used below. The SIGNATURE_HASH_
 		// ALGORITHMS notify alone is NOT a usable indicator: strongSwan
 		// announces it unconditionally regardless of the configured auth.
-		if (IkeGetPayload(header->PayloadList, IKEV2_PAYLOAD_CERTREQ, 0) != NULL)
 		{
 			X *server_x = NULL;
 
@@ -3078,62 +3480,91 @@ static void IkeV2ProcIkeAuthFirst(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *hea
 			}
 			Unlock(ike->Cedar->lock);
 
+			// IkeV2BuildIdrBody already returned the certificate identity
+			// (FQDN CommonName) when a certificate is configured: peers match
+			// the received IDr against the certificate subject and their
+			// configured remote identity
+			auth_out = NULL;
 			if (server_x != NULL)
 			{
-				// The signature AUTH covers the IDr payload, so replace the
-				// address based IDr with the certificate identity (its CN)
-				// BEFORE building the AUTH payload: peers match the received
-				// IDr against the certificate subject and their configured
-				// remote identity
-				if (server_x->subject_name != NULL && UniStrLen(server_x->subject_name->CommonName) > 0)
+				auth_out = IkeV2BuildSignatureAuth(ike, sa, sa->V2SaInitResponseData, sa->InitiatorRand,
+					sa->V2SkPr, sa->TransformSetting.V2Prf->HashSize, idr_body, true);
+
+				if (auth_out != NULL)
 				{
-					char cn[MAX_SIZE];
+					// Send the certificate chain right before the AUTH payload:
+					// the leaf from the Cedar server certificate first, then the
+					// intermediates from ikev2_cert_chain.pem in the working
+					// directory. Peers such as Android's platform IKE do not
+					// fetch missing issuers and reject the leaf without them.
+					BUF *der = XToBuf(server_x, false);
 
-					UniToStr(cn, sizeof(cn), server_x->subject_name->CommonName);
-
-					idr_body = NewBuf();
+					if (der != NULL)
 					{
-						UCHAR id_header[4];
-						Zero(id_header, sizeof(id_header));
-						id_header[0] = IKE_ID_FQDN;
-						WriteBuf(idr_body, id_header, sizeof(id_header));
-						WriteBuf(idr_body, cn, StrLen(cn));
+						IKE_PACKET_PAYLOAD *cert_payload = IkeNewPayload(IKEV2_PAYLOAD_CERT);
+
+						cert_payload->Payload.Cert.CertType = IKE_CERT_TYPE_X509;
+						cert_payload->Payload.Cert.CertData = CloneBuf(der);
+
+						Add(payload_list, cert_payload);
+
+						FreeBuf(der);
 					}
 
-					idr_type = IKE_ID_FQDN;
+					{
+						IO *io = FileOpen("ikev2_cert_chain.pem", false);
+
+						if (io != NULL)
+						{
+							UINT size = FileSize(io);
+
+							if (size > 0 && size <= 65536)
+							{
+								UCHAR *data = Malloc(size);
+
+								if (FileRead(io, data, size))
+								{
+									BUF *b = MemToBuf(data, size);
+									LIST *chain = BufToXList(b, true);
+
+									if (chain != NULL)
+									{
+										UINT j;
+
+										for (j = 0; j < LIST_NUM(chain); j++)
+										{
+											X *x = LIST_DATA(chain, j);
+											BUF *der2 = XToBuf(x, false);
+
+											if (der2 != NULL)
+											{
+												IKE_PACKET_PAYLOAD *cp2 = IkeNewPayload(IKEV2_PAYLOAD_CERT);
+
+												cp2->Payload.Cert.CertType = IKE_CERT_TYPE_X509;
+												cp2->Payload.Cert.CertData = CloneBuf(der2);
+
+												Add(payload_list, cp2);
+
+												FreeBuf(der2);
+											}
+										}
+
+										FreeXList(chain);
+									}
+
+									FreeBuf(b);
+								}
+
+								Free(data);
+							}
+
+							FileClose(io);
+						}
+					}
+				}
+					FreeX(server_x);
 				}
 			}
-
-			auth_out = IkeV2BuildSignatureAuth(ike, sa, sa->V2SaInitResponseData, sa->InitiatorRand,
-				sa->V2SkPr, sa->TransformSetting.V2Prf->HashSize, idr_body, true);
-
-			if (auth_out != NULL && server_x != NULL)
-			{
-				// Send the certificate right before the AUTH payload
-				BUF *der = XToBuf(server_x, false);
-
-				if (der != NULL)
-				{
-					IKE_PACKET_PAYLOAD *cert_payload = IkeNewPayload(IKEV2_PAYLOAD_CERT);
-
-					cert_payload->Payload.Cert.CertType = IKE_CERT_TYPE_X509;
-					cert_payload->Payload.Cert.CertData = CloneBuf(der);
-
-					Add(payload_list, cert_payload);
-
-					FreeBuf(der);
-				}
-			}
-
-			if (server_x != NULL)
-			{
-				FreeX(server_x);
-			}
-		}
-		else
-		{
-			auth_out = NULL;
-		}
 
 		if (auth_out == NULL)
 		{

@@ -78,6 +78,7 @@
 #define	IKEV2_PAYLOAD_ENCRYPTED 46 // Encrypted and Authenticated
 #define	IKEV2_PAYLOAD_CONFIGURATION 47 // Configuration
 #define	IKEV2_PAYLOAD_EAP 48 // Extensible Authentication
+#define	IKEV2_PAYLOAD_SKF 53 // Encrypted Fragment (RFC 7383)
 
 // Macro to check whether the payload type is supported
 #define IKE_IS_SUPPORTED_PAYLOAD_TYPE(i) ((((i) >= IKE_PAYLOAD_SA) && ((i) <= IKE_PAYLOAD_VENDOR_ID)) || (((i) >= IKEV2_PAYLOAD_SA) && ((i) <= IKEV2_PAYLOAD_EAP)) || ((i) == IKE_PAYLOAD_NAT_D) || ((i) == IKE_PAYLOAD_NAT_OA) || ((i) == IKE_PAYLOAD_NAT_OA_DRAFT) || ((i) == IKE_PAYLOAD_NAT_OA_DRAFT_2) || ((i) == IKE_PAYLOAD_NAT_D_DRAFT))
@@ -465,6 +466,7 @@ struct IKE_PACKET_NAT_OA_PAYLOAD
 #define	IKEV2_NOTIFY_UPDATE_SA_ADDRESSES					16400
 #define	IKEV2_NOTIFY_AUTH_LIFETIME						16403
 #define	IKEV2_NOTIFY_EAP_ONLY_AUTHENTICATION				16417
+#define	IKEV2_NOTIFY_IKEV2_FRAGMENTATION_SUPPORTED		16430 // RFC 7383
 #define	IKEV2_NOTIFY_SIGNATURE_HASH_ALGORITHMS			16431
 
 // IKEv2 traffic selector types (RFC 7296 section 3.13.1)

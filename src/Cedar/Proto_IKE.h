@@ -43,6 +43,8 @@
 
 // IKEv2 EAP-MSCHAPv2 sizes
 #define	IKEV2_MSCHAPV2_CHALLENGE_SIZE		16		// Server / peer challenge size
+#define	IKEV2_FRAG_MIN_PLAINTEXT			300		// Send fragmented above this plaintext size (RFC 7383)
+#define	IKEV2_FRAG_CHUNK				700	// Max plaintext bytes per fragment
 #define	IKEV2_MSCHAPV2_NT_RESPONSE_SIZE		24		// NT-Response size
 #define	IKEV2_MSCHAPV2_S_RESPONSE_SIZE		20		// Authenticator response size
 #define	IKEV2_MSK_SIZE						64		// EAP Master Session Key size (RFC 3079 strongSwan form)
@@ -271,6 +273,21 @@ struct IKE_SA
 	BUF *V2SaInitResponseData;					// Raw IKE_SA_INIT response bytes (for AUTH calculation)
 	BUF *V2IdiBody;								// Raw IDi payload body (for AUTH calculation)
 	UCHAR V2IdiType;							// IDi type
+
+	// IKEv2 fragmentation (RFC 7383)
+	bool V2PeerFragSupported;					// Peer announced N(IKEV2_FRAGMENTATION_SUPPORTED) in IKE_SA_INIT
+#define IKEV2_MAX_FRAGMENTS 16
+	// Reassembly state of the incoming fragmented message. V2FragMessageId
+	// is zero while no message is being reassembled.
+	UINT V2FragMessageId;						// Message id being reassembled (0 = none)
+	UINT V2FragTotal;							// Announced total fragment count
+	UINT V2FragCount;							// Number of fragments received so far
+	UCHAR V2FragFirstPayloadType;				// First inner payload type (from fragment 1)
+	BUF *V2FragPlaintexts[IKEV2_MAX_FRAGMENTS];	// Decrypted plaintext per fragment (index = number - 1)
+	// Cache of a fragmented response for retransmission (SendBuffer stays
+	// NULL when the last response was sent fragmented)
+	UINT V2FragSendCount;						// Number of fragment datagrams
+	BUF *V2FragSendBuffers[IKEV2_MAX_FRAGMENTS];	// Raw fragment datagrams
 
 	// IKEv2 EAP state
 	bool V2EapMode;								// IKE_AUTH is running in EAP mode
