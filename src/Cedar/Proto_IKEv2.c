@@ -2837,7 +2837,7 @@ static IPC *IkeV2WaitIpcReady(IKE_CLIENT *c)
 
 	while (c->V2IpcAsync->Done == false && Tick64() < giveup)
 	{
-		Sleep(25);
+		SleepThread(25);
 	}
 
 	if (c->V2IpcAsync->Done && c->V2IpcAsync->Ipc != NULL)
