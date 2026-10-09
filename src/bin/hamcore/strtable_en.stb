@@ -7437,4 +7437,5 @@ SW_LINK_NAME_LANGUAGE_COMMENT				Change the display language setting of %s.
 
 SW_LINK_NAME_DEBUG							Debugging Information Collecting Tool
 SW_LINK_NAME_DEBUG_COMMENT					Collects debugging information of SoftEther VPN. Use this tool only if your support staff asks you to do so.
+LI2_SPLIT_APPLIED	IKEv2 split tunneling traffic selectors applied (mode: %S, %u ranges)
 

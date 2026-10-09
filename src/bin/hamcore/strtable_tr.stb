@@ -7437,3 +7437,4 @@ LI2_FRAG_PEER_SUPPORTED	Eşin IKE parçalama desteği: %s
 LI2_IPC_CONNECTED	Sanal hub için IKEv2 IPC oturumu kuruldu. Sanal IP: %S
 LI2_IPC_FAILED	Sanal hub için IKEv2 IPC oturumu kurulamadı. Kullanıcı Adı: %S
 LI2_IPC_DISCONNECTED	Bu istemcinin IKEv2 IPC oturumu kesildi.
+LI2_SPLIT_APPLIED	IKEv2 bölünmüş tünelleme trafik seçicileri uygulandı (mod: %S, %u aralık)

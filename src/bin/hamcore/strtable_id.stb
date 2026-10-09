@@ -7437,3 +7437,4 @@ LI2_FRAG_PEER_SUPPORTED	Dukungan fragmentasi IKE oleh peer: %s
 LI2_IPC_CONNECTED	Sesi IPC IKEv2 ke hub virtual telah dibuat. IP Virtual: %S
 LI2_IPC_FAILED	Sesi IPC IKEv2 ke hub virtual tidak dapat dibuat. Nama Pengguna: %S
 LI2_IPC_DISCONNECTED	Sesi IPC IKEv2 klien ini telah terputus.
+LI2_SPLIT_APPLIED	Selektor trafik split tunneling IKEv2 diterapkan (mode: %S, %u rentang)

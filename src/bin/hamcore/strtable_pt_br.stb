@@ -7145,3 +7145,4 @@ LI2_FRAG_PEER_SUPPORTED	Suporte à fragmentação IKE pelo par: %s
 LI2_IPC_CONNECTED	A sessão IPC do IKEv2 para o hub virtual foi estabelecida. IP Virtual: %S
 LI2_IPC_FAILED	Não foi possível estabelecer a sessão IPC do IKEv2 para o hub virtual. Nome de Usuário: %S
 LI2_IPC_DISCONNECTED	A sessão IPC do IKEv2 deste cliente foi desconectada.
+LI2_SPLIT_APPLIED	Seletores de tráfego de split tunneling IKEv2 aplicados (modo: %S, %u intervalos)

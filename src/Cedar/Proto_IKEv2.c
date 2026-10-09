@@ -3085,10 +3085,329 @@ static bool IkeV2CreateChildSaPair(IKE_SERVER *ike, IKE_CLIENT *c, IKE_SA *sa,
 // covers it, the initiator side is narrowed to exactly that address
 // (RFC 7296 section 2.9 traffic selector narrowing, as expected by
 // strongSwan and Apple clients).
+
+// ---- Split tunneling (M2) -------------------------------------------------
+// The backend writes a per-hub rule file "split_rules/<hub>.conf" next to
+// the vpnserver working directory when a connection is issued:
+//   line 1: GLOBAL | WHITELIST | BLACKLIST
+//   then : one IPv4 CIDR (or bare address) per line, comments with '#'
+// WHITELIST: only the listed networks (plus the tunnel-internal DNS and
+// DHCP addresses) are routed into the tunnel; everything else stays
+// direct. BLACKLIST: the listed networks stay direct, the rest is tunneled
+// (expressed as the complement range set, RFC 7296 section 2.9 allows the
+// responder to narrow the proposed traffic selectors).
+
+#define IKEV2_SPLIT_MAX_RANGES		16
+
+// Parses "a.b.c.d" or "a.b.c.d/nn" into an IPv4 start/end range.
+bool IkeV2ParseCidrToRange(char *s, UINT *start, UINT *end)
+{
+	UINT ip = 0, mask = 32, i;
+	char tmp[MAX_PATH];
+	char *slash;
+	UINT prefix;
+	// Validate arguments
+	if (s == NULL || start == NULL || end == NULL)
+	{
+		return false;
+	}
+
+	StrCpy(tmp, sizeof(tmp), s);
+	Trim(tmp);
+
+	slash = SearchStr(tmp, "/", 0);
+	if (slash != NULL)
+	{
+		*slash = 0;
+		prefix = ToInt(slash + 1);
+		if (prefix > 32)
+		{
+			return false;
+		}
+		mask = prefix;
+	}
+
+	if (StrToIP32(tmp) == 0)
+	{
+		return false;
+	}
+	ip = StrToIP32(tmp);
+
+	*start = ip & (0xFFFFFFFF << (32 - mask));
+	if (mask == 0)
+	{
+		*end = 0xFFFFFFFF;
+	}
+	else
+	{
+		*end = *start | (0xFFFFFFFF >> mask);
+	}
+
+	return true;
+}
+
+// Builds an IKEV2_TS range from two IPv4 values in host order.
+IKEV2_TS *IkeV2NewTsRange(UINT start, UINT end)
+{
+	IKEV2_TS *ts = ZeroMalloc(sizeof(IKEV2_TS));
+	ts->Type = IKEV2_TS_IPV4_ADDR_RANGE;
+	ts->IpProtocol = 0;
+	ts->StartPort = 0;
+	ts->EndPort = 65535;
+	UINTToIP(&ts->StartAddress, start);
+	UINTToIP(&ts->EndAddress, end);
+	return ts;
+}
+
+// Compares two ranges for sorting by start address.
+int IkeV2CompareTsRange(void *p1, void *p2)
+{
+	IKEV2_TS *a = (IKEV2_TS *)p1;
+	IKEV2_TS *b = (IKEV2_TS *)p2;
+	UINT as = IPToUINT(&a->StartAddress), bs = IPToUINT(&b->StartAddress);
+	if (as != bs) return (as < bs) ? -1 : 1;
+	return 0;
+}
+
+// Loads the split rule file of a hub. Returns a sorted, merged list of
+// IPv4 IKEV2_TS ranges allowed into the tunnel, or NULL when the traffic
+// is global (all tunneled).
+LIST *IkeV2LoadSplitRanges(char *hubname)
+{
+	char path[MAX_PATH];
+	char line[MAX_PATH];
+	BUF *b;
+	char mode[32];
+	LIST *raw;
+	UINT i;
+	// Validate arguments
+	if (hubname == NULL || IsEmptyStr(hubname))
+	{
+		return NULL;
+	}
+
+	if (IsSafeStr(hubname) == false || StrLen(hubname) > MAX_HUBNAME_LEN)
+	{
+		return NULL;
+	}
+
+	Format(path, sizeof(path), "split_rules/%s.conf", hubname);
+
+	b = ReadDump(path);
+	if (b == NULL)
+	{
+		return NULL;	// no rule file: global
+	}
+
+	Zero(mode, sizeof(mode));
+	raw = NewList(IkeV2CompareTsRange);
+
+	while (true)
+	{
+		char *line = CfgReadNextLine(b);
+		if (line == NULL)
+		{
+			break;
+		}
+
+		Trim(line);
+		if (IsEmptyStr(line) || StartWith(line, "#"))
+		{
+			Free(line);
+			continue;
+		}
+
+		if (IsEmptyStr(mode))
+		{
+			StrCpy(mode, sizeof(mode), line);
+			Free(line);
+			continue;
+		}
+
+		if (StartWith(line, "ip:") || StartWith(line, "domain:"))
+		{
+			// domain: entries are handled by the DNS proxy, not by the
+			// traffic selectors; ip: entries carry the CIDR after the tag.
+			if (StartWith(line, "domain:"))
+			{
+				Free(line);
+				continue;
+			}
+			{
+				char tmp[MAX_PATH];
+				StrCpy(tmp, sizeof(tmp), line + 3);
+				Trim(tmp);
+				StrCpy(line, StrLen(line) + 1, tmp);
+			}
+		}
+
+		{
+			UINT start, end;
+			if (IkeV2ParseCidrToRange(line, &start, &end))
+			{
+				Add(raw, IkeV2NewTsRange(start, end));
+			}
+		}
+
+		Free(line);
+	}
+
+	FreeBuf(b);
+
+	if (IsEmptyStr(mode) || StrCmpi(mode, "GLOBAL") == 0 || LIST_NUM(raw) == 0)
+	{
+		// global or no usable rules
+		for (i = 0; i < LIST_NUM(raw); i++)
+		{
+			Free(LIST_DATA(raw, i));
+		}
+		ReleaseList(raw);
+		return NULL;
+	}
+
+	Sort(raw);
+
+	{
+		LIST *merged = NewList(NULL);	// kept sorted manually during merge
+		UINT curStart = 0, curEnd = 0;
+		bool have = false;
+
+		for (i = 0; i < LIST_NUM(raw); i++)
+		{
+			IKEV2_TS *ts = (IKEV2_TS *)LIST_DATA(raw, i);
+			UINT s = IPToUINT(&ts->StartAddress);
+			UINT e = IPToUINT(&ts->EndAddress);
+
+			if (have && s <= curEnd + 1)
+			{
+				if (e > curEnd)
+				{
+					curEnd = e;
+				}
+			}
+			else
+			{
+				if (have)
+				{
+					Add(merged, IkeV2NewTsRange(curStart, curEnd));
+				}
+				curStart = s;
+				curEnd = e;
+				have = true;
+			}
+		}
+		if (have)
+		{
+			Add(merged, IkeV2NewTsRange(curStart, curEnd));
+		}
+
+		for (i = 0; i < LIST_NUM(raw); i++)
+		{
+			Free(LIST_DATA(raw, i));
+		}
+		ReleaseList(raw);
+
+		if (StrCmpi(mode, "BLACKLIST") == 0)
+		{
+			// Invert the merged ranges into their complement within
+			// 0.0.0.0-255.255.255.255.
+			LIST *inv = NewList(NULL);
+			UINT prev = 0;
+			for (i = 0; i < LIST_NUM(merged); i++)
+			{
+				IKEV2_TS *ts = (IKEV2_TS *)LIST_DATA(merged, i);
+				UINT s = IPToUINT(&ts->StartAddress);
+				UINT e = IPToUINT(&ts->EndAddress);
+
+				if (s > prev)
+				{
+					Add(inv, IkeV2NewTsRange(prev, s - 1));
+				}
+				prev = (e == 0xFFFFFFFF) ? 0xFFFFFFFF : e + 1;
+				if (prev == 0xFFFFFFFF && e == 0xFFFFFFFF)
+				{
+					break;
+				}
+			}
+			if (prev != 0xFFFFFFFF)
+			{
+				Add(inv, IkeV2NewTsRange(prev + 1, 0xFFFFFFFF));
+			}
+
+			for (i = 0; i < LIST_NUM(merged); i++)
+			{
+				Free(LIST_DATA(merged, i));
+			}
+			ReleaseList(merged);
+
+			merged = inv;
+		}
+
+		if (LIST_NUM(merged) == 0)
+		{
+			ReleaseList(merged);
+			return NULL;
+		}
+
+		// Cap the selector count: peers accept a limited number of ranges.
+		while (LIST_NUM(merged) > IKEV2_SPLIT_MAX_RANGES)
+		{
+			// Drop the last range (highest addresses) and log it.
+			Free(LIST_DATA(merged, LIST_NUM(merged) - 1));
+			Delete(merged, LIST_DATA(merged, LIST_NUM(merged) - 1));
+		}
+
+		return merged;
+	}
+}
+
+// Releases a split range list.
+void IkeV2FreeSplitRanges(LIST *l)
+{
+	UINT i;
+	if (l == NULL)
+	{
+		return;
+	}
+	for (i = 0; i < LIST_NUM(l); i++)
+	{
+		Free(LIST_DATA(l, i));
+	}
+	ReleaseList(l);
+}
+
+// Appends the tunnel-internal addresses (DNS / DHCP server of the virtual
+// network) to the allowed ranges so name resolution keeps flowing through
+// the tunnel in whitelist mode.
+void IkeV2SplitAddTunnelInternal(LIST *ranges, DHCP_OPTION_LIST *dhcp)
+{
+	UINT dns, server;
+	if (ranges == NULL || dhcp == NULL)
+	{
+		return;
+	}
+
+	dns = dhcp->DnsServer;
+	server = dhcp->ServerAddress;
+
+	if (dns != 0 && dns != 0xFFFFFFFF)
+	{
+		Add(ranges, IkeV2NewTsRange(dns, dns));
+	}
+	if (server != 0 && server != 0xFFFFFFFF && server != dns)
+	{
+		Add(ranges, IkeV2NewTsRange(server, server));
+	}
+
+	// No Sort() here: the list may carry a NULL comparator (built by
+	// merging), and range order is irrelevant to TS semantics.
+}
+
+
 static bool IkeV2AddChildSaResponsePayloadsEx(IKE_SERVER *ike, LIST *payload_list,
 											  IPSEC_SA_TRANSFORM_SETTING *child_setting, UINT our_spi,
 											  IKE_PACKET_PAYLOAD *tsi_payload, IKE_PACKET_PAYLOAD *tsr_payload,
-											  IP *narrow_ip)
+											  IP *narrow_ip, LIST *split_ranges)
 {
 	IKEV2_PACKET_TS_PAYLOAD *tsi, *tsr;
 	IKEV2_TS *first_i;
@@ -3166,26 +3485,48 @@ static bool IkeV2AddChildSaResponsePayloadsEx(IKE_SERVER *ike, LIST *payload_lis
 		}
 
 		Add(payload_list, IkeV2NewTsPayload(IKEV2_PAYLOAD_TS_INITIATOR, NewListSingle(echo_i)));
-		Add(payload_list, IkeV2NewTsPayload(IKEV2_PAYLOAD_TS_RESPONDER, NewListSingle(echo_r)));
+
+		if (split_ranges != NULL && LIST_NUM(split_ranges) >= 1)
+		{
+			// Split tunneling: replace the responder selector with the
+			// narrowed destination set (subset of the proposed 0.0.0.0/0,
+			// RFC 7296 section 2.9). Every range is cloned because the
+			// payload takes ownership of the list.
+			LIST *resp = NewList(NULL);
+			UINT k;
+			for (k = 0; k < LIST_NUM(split_ranges); k++)
+			{
+				IKEV2_TS *src = (IKEV2_TS *)LIST_DATA(split_ranges, k);
+				IKEV2_TS *clone = ZeroMalloc(sizeof(IKEV2_TS));
+				Copy(clone, src, sizeof(IKEV2_TS));
+				Add(resp, clone);
+			}
+			Free(echo_r);
+			Add(payload_list, IkeV2NewTsPayload(IKEV2_PAYLOAD_TS_RESPONDER, resp));
+		}
+		else
+		{
+			Add(payload_list, IkeV2NewTsPayload(IKEV2_PAYLOAD_TS_RESPONDER, NewListSingle(echo_r)));
+		}
 	}
 
 	return true;
 }
+
+static bool IkeV2AddChildSaResponsePayloadsEx(IKE_SERVER *ike, LIST *payload_list,
+											  IPSEC_SA_TRANSFORM_SETTING *child_setting, UINT our_spi,
+											  IKE_PACKET_PAYLOAD *tsi_payload, IKE_PACKET_PAYLOAD *tsr_payload,
+											  IP *narrow_ip, LIST *split_ranges);
 
 static bool IkeV2AddChildSaResponsePayloads(IKE_SERVER *ike, LIST *payload_list,
 											IPSEC_SA_TRANSFORM_SETTING *child_setting, UINT our_spi,
 											IKE_PACKET_PAYLOAD *tsi_payload, IKE_PACKET_PAYLOAD *tsr_payload)
 {
 	return IkeV2AddChildSaResponsePayloadsEx(ike, payload_list, child_setting, our_spi,
-		tsi_payload, tsr_payload, NULL);
+		tsi_payload, tsr_payload, NULL, NULL);
 }
 
 //// IKE_AUTH
-
-static bool IkeV2AddChildSaResponsePayloadsEx(IKE_SERVER *ike, LIST *payload_list,
-											  IPSEC_SA_TRANSFORM_SETTING *child_setting, UINT our_spi,
-											  IKE_PACKET_PAYLOAD *tsi_payload, IKE_PACKET_PAYLOAD *tsr_payload,
-											  IP *narrow_ip);
 
 static bool IkeV2CreateChildSaPairEx(IKE_SERVER *ike, IKE_CLIENT *c, IKE_SA *sa,
 									 IKE_PACKET_PAYLOAD *sa_payload, IPSEC_SA_TRANSFORM_SETTING *child_setting,
@@ -3998,13 +4339,23 @@ static void IkeV2EapFinalRound(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header
 
 	{
 		IP narrow_ip;
+		LIST *split_ranges = IkeV2LoadSplitRanges(c->V2IpcAsync->Ipc->HubName);
 
 		Zero(&narrow_ip, sizeof(narrow_ip));
 		UINTToIP(&narrow_ip, c->V2IpcAsync->L3ClientAddressOption.ClientAddress);
 
-		if (IkeV2AddChildSaResponsePayloadsEx(ike, payload_list, &child_setting, our_spi,
-			tsi_payload, tsr_payload, &narrow_ip) == false)
+		if (split_ranges != NULL)
 		{
+			// Keep the tunnel-internal DNS/DHCP addresses reachable even
+			// in whitelist mode.
+			IkeV2SplitAddTunnelInternal(split_ranges, &c->V2IpcAsync->L3ClientAddressOption);
+			IPsecLog(ike, NULL, sa, NULL, "LI2_SPLIT_APPLIED", c->V2IpcAsync->Ipc->HubName, LIST_NUM(split_ranges));
+		}
+
+		if (IkeV2AddChildSaResponsePayloadsEx(ike, payload_list, &child_setting, our_spi,
+			tsi_payload, tsr_payload, &narrow_ip, split_ranges) == false)
+		{
+			IkeV2FreeSplitRanges(split_ranges);
 			IkeFreePayloadList(payload_list);
 			IkeFreePayload(sa_payload);
 			IkeFreePayload(tsi_payload);
@@ -4012,6 +4363,8 @@ static void IkeV2EapFinalRound(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header
 			IkeV2MarkIkeSaDeleted(ike, sa);
 			return;
 		}
+
+		IkeV2FreeSplitRanges(split_ranges);
 	}
 
 	// Announce MOBIKE support (RFC 4555): the peer may then change its

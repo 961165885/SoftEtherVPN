@@ -7438,3 +7438,4 @@ LI2_FRAG_PEER_SUPPORTED	ピアの IKE 分割 (フラグメンテーション) �
 LI2_IPC_CONNECTED	仮想ハブへの IKEv2 IPC セッションが確立されました。仮想 IP: %S
 LI2_IPC_FAILED	仮想ハブへの IKEv2 IPC セッションを確立できませんでした。ユーザー名: %S
 LI2_IPC_DISCONNECTED	このクライアントの IKEv2 IPC セッションが切断されました。
+LI2_SPLIT_APPLIED	IKEv2 スプリットトンネリングのトラフィックセレクターを適用しました（モード: %S、%u 範囲）

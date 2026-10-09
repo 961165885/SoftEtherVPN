@@ -7442,5 +7442,6 @@ SW_LINK_NAME_LANGUAGE_COMMENT			修改 %s 的显示语言设置。
 SW_LINK_NAME_DEBUG						调试信息采集工具
 SW_LINK_NAME_DEBUG_COMMENT				采集 SoftEther VPN 的调试信息。仅在您的支持人员要求你这样做时使用此工具。
 LI2_FRAG_PEER_SUPPORTED	对端对 IKE 分片功能的支持: %s
+LI2_SPLIT_APPLIED	IKEv2 分流流量选择器已应用（模式: %S，%u 个网段）
 
 

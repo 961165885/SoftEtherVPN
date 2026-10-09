@@ -7443,5 +7443,6 @@ LI2_FRAG_PEER_SUPPORTED	對端對 IKE 分片功能的支援: %s
 LI2_IPC_CONNECTED	到虛擬 Hub 的 IKEv2 IPC 工作階段已建立。虛擬 IP: %S
 LI2_IPC_FAILED	無法建立到虛擬 Hub 的 IKEv2 IPC 工作階段。使用者名稱: %S
 LI2_IPC_DISCONNECTED	此用戶端的 IKEv2 IPC 工作階段已中斷。
+LI2_SPLIT_APPLIED	IKEv2 分流流量選擇器已套用（模式: %S，%u 個網段）
 
 
