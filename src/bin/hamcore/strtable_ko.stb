@@ -7418,3 +7418,18 @@ LO_CLIENT_NO_CERT	Client certificate is not provided, will use password authenti
 CMD_AccessAddEx_REDIRECTURL	The specified URL will be mandatory replied to the client as a response for TCP connecting request packets which matches the conditions of this access list entry via this Virtual Hub. To use this setting, you can enforce the web browser of the VPN Client computer to show the specified web site when that web browser tries to access the specific IP address.
 CMD_AccessAddEx6_REDIRECTURL	The specified URL will be mandatory replied to the client as a response for TCP connecting request packets which matches the conditions of this access list entry via this Virtual Hub. To use this setting, you can enforce the web browser of the VPN Client computer to show the specified web site when that web browser tries to access the specific IP address.
 CMD_TrafficServer_NOHUP		When "yes" is specified, the server process never stops without regard to any input from the console. It is convenient when you want to run the TrafficServer endlessly.
+LI2_IKE_SA_INIT_SENT	IKEv2 IKE_SA_INIT 응답을 전송했습니다. 개시자 Cookie: 0x%I64X, 응답자 Cookie: 0x%I64X, DH 그룹: %S, 암호화 알고리즘: %S, 암호화 키 길이: %u 비트, 무결성 알고리즘: %S, PRF 알고리즘: %S, NAT 감지: %s
+LI2_IKE_SA_ESTABLISHED	IKEv2 IKE SA가 설정되었습니다. 개시자 Cookie: 0x%I64X, 응답자 Cookie: 0x%I64X, 클라이언트 ID: %S, 전송 모드: %s, NAT 감지: %s, 자식 SA 암호화 알고리즘: %S (%u 비트), 자식 SA 무결성 알고리즘: %S
+LI2_DELETE_IKE_SA	이 IKEv2 IKE SA가 삭제되었습니다.
+LI2_DELETE_IKE_CLIENT	이 IKEv2 IPsec 클라이언트가 삭제되었습니다.
+LI2_DELETE_RECEIVED	클라이언트로부터 IKEv2 IKE SA 삭제 요청을 수신했습니다.
+LI2_AUTH_FAILED	클라이언트의 IKEv2 인증에 실패했습니다.
+LI2_EAP_UNSUPPORTED	클라이언트가 아직 지원되지 않는 EAP 인증을 요청했습니다.
+LI2_SK_ICV_ERROR	수신된 IKEv2 암호화 페이로드의 무결성 검사에 실패했습니다.
+LI2_INVALID_PACKET	손상된 IKEv2 패킷을 수신했습니다.
+LI2_CREATE_CHILD_SA_REJECTED	IKEv2 CREATE_CHILD_SA 요청이 거부되었습니다. 재키잉 및 추가 자식 SA는 아직 지원되지 않습니다.
+LI2_EAP_STARTED	IKEv2 EAP 교환이 시작되었습니다. 클라이언트 ID: %S
+LI2_FRAG_PEER_SUPPORTED	피어의 IKE 조각화(Fragmentation) 지원 여부: %s
+LI2_IPC_CONNECTED	가상 허브로의 IKEv2 IPC 세션이 설정되었습니다. 가상 IP: %S
+LI2_IPC_FAILED	가상 허브로의 IKEv2 IPC 세션을 설정할 수 없습니다. 사용자 이름: %S
+LI2_IPC_DISCONNECTED	이 클라이언트의 IKEv2 IPC 세션이 연결 해제되었습니다.

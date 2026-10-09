@@ -7428,5 +7428,20 @@ SW_LINK_NAME_LANGUAGE_COMMENT			修改 %s 的顯示語言設定。
 
 SW_LINK_NAME_DEBUG						調試資訊採集工具
 SW_LINK_NAME_DEBUG_COMMENT				採集 SoftEther VPN 的調試資訊。僅在您的支持人員要求你這樣做時使用此工具。
+LI2_IKE_SA_INIT_SENT	已傳送 IKEv2 IKE_SA_INIT 回應。發起方 Cookie: 0x%I64X, 回應方 Cookie: 0x%I64X, DH 群組: %S, 加密演算法: %S, 加密金鑰長度: %u 位元, 完整性演算法: %S, PRF 演算法: %S, 偵測到 NAT: %s
+LI2_IKE_SA_ESTABLISHED	IKEv2 IKE SA 已建立。發起方 Cookie: 0x%I64X, 回應方 Cookie: 0x%I64X, 用戶端 ID: %S, 傳輸模式: %s, 偵測到 NAT: %s, 子 SA 加密演算法: %S (%u 位元), 子 SA 完整性演算法: %S
+LI2_DELETE_IKE_SA	此 IKEv2 IKE SA 已刪除。
+LI2_DELETE_IKE_CLIENT	此 IKEv2 IPsec 用戶端已刪除。
+LI2_DELETE_RECEIVED	收到用戶端傳送的 IKEv2 IKE SA 刪除要求。
+LI2_AUTH_FAILED	用戶端的 IKEv2 驗證失敗。
+LI2_EAP_UNSUPPORTED	用戶端要求了尚不支援的 EAP 驗證。
+LI2_SK_ICV_ERROR	收到的 IKEv2 加密承載完整性檢查失敗。
+LI2_INVALID_PACKET	收到了損毀的 IKEv2 封包。
+LI2_CREATE_CHILD_SA_REJECTED	IKEv2 CREATE_CHILD_SA 要求被拒絕。尚不支援重新金鑰協商與附加子 SA。
+LI2_EAP_STARTED	IKEv2 EAP 交換已開始。用戶端 ID: %S
+LI2_FRAG_PEER_SUPPORTED	對端對 IKE 分片功能的支援: %s
+LI2_IPC_CONNECTED	到虛擬 Hub 的 IKEv2 IPC 工作階段已建立。虛擬 IP: %S
+LI2_IPC_FAILED	無法建立到虛擬 Hub 的 IKEv2 IPC 工作階段。使用者名稱: %S
+LI2_IPC_DISCONNECTED	此用戶端的 IKEv2 IPC 工作階段已中斷。
 
 

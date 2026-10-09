@@ -1863,20 +1863,20 @@ LI_PREFIX_IPSEC				IPsec ESP 会话 (IPsec SA) %u (客户端: %u) (%S:%u -> %S:%
 LI_START					IPsec 2.0 版 (ISAKMP/IKEv1) 处理模块已开启。
 LI_STOPPING					IPsec 2.0 版 (ISAKMP/IKEv1) 处理模块现在正在关闭。
 LI_STOP						IPsec 2.0 版 (ISAKMP/IKEv1) 处理模块已正常关闭。
-LI2_IKE_SA_INIT_SENT		The IKEv2 IKE_SA_INIT response was sent. Initiator Cookie: 0x%I64X, Responder Cookie: 0x%I64X, DH Group: %S, Cipher Algorithm: %S, Cipher Key Size: %u bits, Integrity Algorithm: %S, PRF Algorithm: %S, NAT Detected: %s
-LI2_IKE_SA_ESTABLISHED	The IKEv2 IKE SA was established. Initiator Cookie: 0x%I64X, Responder Cookie: 0x%I64X, Client ID: %S, Transport Mode: %s, NAT Detected: %s, Child SA Cipher Algorithm: %S (%u bits), Child SA Integrity Algorithm: %S
-LI2_DELETE_IKE_SA		This IKEv2 IKE SA is deleted.
-LI2_DELETE_IKE_CLIENT	This IKEv2 IPsec Client is deleted.
-LI2_DELETE_RECEIVED		A delete request for the IKEv2 IKE SA was received from the client.
-LI2_AUTH_FAILED			The IKEv2 authentication of the client failed.
-LI2_EAP_UNSUPPORTED		The client requested EAP authentication which is not supported yet.
-LI2_SK_ICV_ERROR		The integrity check of a received IKEv2 encrypted payload failed.
-LI2_INVALID_PACKET		A broken IKEv2 packet was received.
-LI2_CREATE_CHILD_SA_REJECTED	The IKEv2 CREATE_CHILD_SA request was rejected. Rekeying and additional Child SAs are not supported yet.
-LI2_EAP_STARTED		The IKEv2 EAP exchange started. Client ID: %S
-LI2_IPC_CONNECTED	The IKEv2 IPC session into the virtual hub was established. Virtual IP: %S
-LI2_IPC_FAILED		The IKEv2 IPC session into the virtual hub could not be established. Username: %S
-LI2_IPC_DISCONNECTED	The IKEv2 IPC session of this client was disconnected.
+LI2_IKE_SA_INIT_SENT	已发送 IKEv2 IKE_SA_INIT 响应。发起方 Cookie: 0x%I64X, 响应方 Cookie: 0x%I64X, DH 组: %S, 加密算法: %S, 加密密钥长度: %u 位, 完整性算法: %S, PRF 算法: %S, 检测到 NAT: %s
+LI2_IKE_SA_ESTABLISHED	IKEv2 IKE SA 已建立。发起方 Cookie: 0x%I64X, 响应方 Cookie: 0x%I64X, 客户端 ID: %S, 传输模式: %s, 检测到 NAT: %s, 子 SA 加密算法: %S (%u 位), 子 SA 完整性算法: %S
+LI2_DELETE_IKE_SA	此 IKEv2 IKE SA 已删除。
+LI2_DELETE_IKE_CLIENT	此 IKEv2 IPsec 客户端已删除。
+LI2_DELETE_RECEIVED	收到客户端发送的 IKEv2 IKE SA 删除请求。
+LI2_AUTH_FAILED	客户端的 IKEv2 身份验证失败。
+LI2_EAP_UNSUPPORTED	客户端请求了尚不支持的 EAP 身份验证。
+LI2_SK_ICV_ERROR	收到的 IKEv2 加密载荷完整性校验失败。
+LI2_INVALID_PACKET	收到了损坏的 IKEv2 数据包。
+LI2_CREATE_CHILD_SA_REJECTED	IKEv2 CREATE_CHILD_SA 请求被拒绝。尚不支持重新密钥协商和附加子 SA。
+LI2_EAP_STARTED	IKEv2 EAP 交换已开始。客户端 ID: %S
+LI2_IPC_CONNECTED	到虚拟 HUB 的 IKEv2 IPC 会话已建立。虚拟 IP: %S
+LI2_IPC_FAILED	无法建立到虚拟 HUB 的 IKEv2 IPC 会话。用户名: %S
+LI2_IPC_DISCONNECTED	此客户端的 IKEv2 IPC 会话已断开。
 LI_NUM_IPSEC_SA				在关机时刻, 余下的 IPsec SA 数量是 %u。
 LI_NUM_IKE_SA				在关机时刻, 余下的 IKE SA 数量是 %u。
 LI_NUM_IKE_CLIENTS			在关机时刻, 余下的 IKE 客户端数量是 %u。
@@ -7441,5 +7441,6 @@ SW_LINK_NAME_LANGUAGE_COMMENT			修改 %s 的显示语言设置。
 
 SW_LINK_NAME_DEBUG						调试信息采集工具
 SW_LINK_NAME_DEBUG_COMMENT				采集 SoftEther VPN 的调试信息。仅在您的支持人员要求你这样做时使用此工具。
+LI2_FRAG_PEER_SUPPORTED	对端对 IKE 分片功能的支持: %s
 
 

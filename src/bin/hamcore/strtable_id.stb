@@ -7422,3 +7422,18 @@ SW_LINK_NAME_LANGUAGE_COMMENT				Ubah pengaturan bahasa tampilan untuk %s.
 
 SW_LINK_NAME_DEBUG							Pengumpulan Informasi Debugging
 SW_LINK_NAME_DEBUG_COMMENT					Mengumpulkan informasi debugging untuk SoftEther VPN. Gunakan alat ini hanya jika staf dukungan Anda meminta Anda untuk melakukannya.
+LI2_IKE_SA_INIT_SENT	Respons IKE_SA_INIT IKEv2 telah dikirim. Cookie Inisiator: 0x%I64X, Cookie Responder: 0x%I64X, Grup DH: %S, Algoritma Sandi: %S, Ukuran Kunci Sandi: %u bit, Algoritma Integritas: %S, Algoritma PRF: %S, NAT Terdeteksi: %s
+LI2_IKE_SA_ESTABLISHED	IKE SA IKEv2 telah dibuat. Cookie Inisiator: 0x%I64X, Cookie Responder: 0x%I64X, ID Klien: %S, Mode Transportasi: %s, NAT Terdeteksi: %s, Algoritma Sandi SA Anak: %S (%u bit), Algoritma Integritas SA Anak: %S
+LI2_DELETE_IKE_SA	IKE SA IKEv2 ini telah dihapus.
+LI2_DELETE_IKE_CLIENT	Klien IPsec IKEv2 ini telah dihapus.
+LI2_DELETE_RECEIVED	Permintaan penghapusan IKE SA IKEv2 diterima dari klien.
+LI2_AUTH_FAILED	Autentikasi IKEv2 klien gagal.
+LI2_EAP_UNSUPPORTED	Klien meminta autentikasi EAP yang belum didukung.
+LI2_SK_ICV_ERROR	Pemeriksaan integritas payload terenkripsi IKEv2 yang diterima gagal.
+LI2_INVALID_PACKET	Paket IKEv2 yang rusak diterima.
+LI2_CREATE_CHILD_SA_REJECTED	Permintaan CREATE_CHILD_SA IKEv2 ditolak. Rekeying dan SA Anak tambahan belum didukung.
+LI2_EAP_STARTED	Pertukaran EAP IKEv2 dimulai. ID Klien: %S
+LI2_FRAG_PEER_SUPPORTED	Dukungan fragmentasi IKE oleh peer: %s
+LI2_IPC_CONNECTED	Sesi IPC IKEv2 ke hub virtual telah dibuat. IP Virtual: %S
+LI2_IPC_FAILED	Sesi IPC IKEv2 ke hub virtual tidak dapat dibuat. Nama Pengguna: %S
+LI2_IPC_DISCONNECTED	Sesi IPC IKEv2 klien ini telah terputus.

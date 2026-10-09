@@ -7130,3 +7130,18 @@ SW_LINK_NAME_LANGUAGE	Configure Display Language
 SW_LINK_NAME_LANGUAGE_COMMENT	Change the display language setting of %s.
 SW_LINK_NAME_DEBUG	Debugging Information Collecting Tool
 SW_LINK_NAME_DEBUG_COMMENT	Collects debugging information of SoftEther VPN. Use this tool only if your support staff asks you to do so.
+LI2_IKE_SA_INIT_SENT	A resposta IKE_SA_INIT do IKEv2 foi enviada. Cookie do Iniciador: 0x%I64X, Cookie do Respondedor: 0x%I64X, Grupo DH: %S, Algoritmo de Criptografia: %S, Tamanho da Chave de Criptografia: %u bits, Algoritmo de Integridade: %S, Algoritmo PRF: %S, NAT Detectado: %s
+LI2_IKE_SA_ESTABLISHED	A IKE SA do IKEv2 foi estabelecida. Cookie do Iniciador: 0x%I64X, Cookie do Respondedor: 0x%I64X, ID do Cliente: %S, Modo de Transporte: %s, NAT Detectado: %s, Algoritmo de Criptografia da SA Filha: %S (%u bits), Algoritmo de Integridade da SA Filha: %S
+LI2_DELETE_IKE_SA	Esta IKE SA do IKEv2 foi excluída.
+LI2_DELETE_IKE_CLIENT	Este cliente IPsec IKEv2 foi excluído.
+LI2_DELETE_RECEIVED	Uma solicitação de exclusão da IKE SA do IKEv2 foi recebida do cliente.
+LI2_AUTH_FAILED	A autenticação IKEv2 do cliente falhou.
+LI2_EAP_UNSUPPORTED	O cliente solicitou autenticação EAP que ainda não é suportada.
+LI2_SK_ICV_ERROR	A verificação de integridade de um payload criptografado IKEv2 recebido falhou.
+LI2_INVALID_PACKET	Um pacote IKEv2 corrompido foi recebido.
+LI2_CREATE_CHILD_SA_REJECTED	A solicitação CREATE_CHILD_SA do IKEv2 foi rejeitada. Renegociação de chaves e SAs Filhas adicionais ainda não são suportadas.
+LI2_EAP_STARTED	A troca EAP do IKEv2 começou. ID do Cliente: %S
+LI2_FRAG_PEER_SUPPORTED	Suporte à fragmentação IKE pelo par: %s
+LI2_IPC_CONNECTED	A sessão IPC do IKEv2 para o hub virtual foi estabelecida. IP Virtual: %S
+LI2_IPC_FAILED	Não foi possível estabelecer a sessão IPC do IKEv2 para o hub virtual. Nome de Usuário: %S
+LI2_IPC_DISCONNECTED	A sessão IPC do IKEv2 deste cliente foi desconectada.

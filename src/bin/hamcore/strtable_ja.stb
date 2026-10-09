@@ -7423,3 +7423,18 @@ SW_LINK_NAME_LANGUAGE_COMMENT				%s の表示言語を変更します。
 
 SW_LINK_NAME_DEBUG							デバッグ情報収集ツール
 SW_LINK_NAME_DEBUG_COMMENT					SoftEther VPN のデバッグ情報を収集します。サポート担当者から依頼があった場合のみ使用してください。
+LI2_IKE_SA_INIT_SENT	IKEv2 IKE_SA_INIT 応答を送信しました。イニシエータ Cookie: 0x%I64X, レスポンダ Cookie: 0x%I64X, DH グループ: %S, 暗号アルゴリズム: %S, 暗号鍵長: %u ビット, 整合性アルゴリズム: %S, PRF アルゴリズム: %S, NAT 検出: %s
+LI2_IKE_SA_ESTABLISHED	IKEv2 IKE SA が確立されました。イニシエータ Cookie: 0x%I64X, レスポンダ Cookie: 0x%I64X, クライアント ID: %S, トランスポートモード: %s, NAT 検出: %s, 子 SA 暗号アルゴリズム: %S (%u ビット), 子 SA 整合性アルゴリズム: %S
+LI2_DELETE_IKE_SA	この IKEv2 IKE SA は削除されました。
+LI2_DELETE_IKE_CLIENT	この IKEv2 IPsec クライアントは削除されました。
+LI2_DELETE_RECEIVED	クライアントから IKEv2 IKE SA の削除要求を受信しました。
+LI2_AUTH_FAILED	クライアントの IKEv2 認証に失敗しました。
+LI2_EAP_UNSUPPORTED	クライアントが、まだサポートされていない EAP 認証を要求しました。
+LI2_SK_ICV_ERROR	受信した IKEv2 暗号化ペイロードの整合性チェックに失敗しました。
+LI2_INVALID_PACKET	破損した IKEv2 パケットを受信しました。
+LI2_CREATE_CHILD_SA_REJECTED	IKEv2 CREATE_CHILD_SA 要求は拒否されました。リキーイングと追加の子 SA はまだサポートされていません。
+LI2_EAP_STARTED	IKEv2 EAP 交換が開始されました。クライアント ID: %S
+LI2_FRAG_PEER_SUPPORTED	ピアの IKE 分割 (フラグメンテーション) サポート: %s
+LI2_IPC_CONNECTED	仮想ハブへの IKEv2 IPC セッションが確立されました。仮想 IP: %S
+LI2_IPC_FAILED	仮想ハブへの IKEv2 IPC セッションを確立できませんでした。ユーザー名: %S
+LI2_IPC_DISCONNECTED	このクライアントの IKEv2 IPC セッションが切断されました。

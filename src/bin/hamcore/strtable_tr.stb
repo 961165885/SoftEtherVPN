@@ -7422,3 +7422,18 @@ SW_LINK_NAME_LANGUAGE_COMMENT	%s'in görüntüleme dili ayarını değiştirin.
 
 SW_LINK_NAME_DEBUG	Hata Ayıklama Bilgi Toplama Aracı
 SW_LINK_NAME_DEBUG_COMMENT	SoftEther VPN'in hata ayıklama bilgilerini toplar. Bu aracı yalnızca destek personeliniz sizden bunu yapmanızı isterse kullanın.
+LI2_IKE_SA_INIT_SENT	IKEv2 IKE_SA_INIT yanıtı gönderildi. Başlatan Cookie: 0x%I64X, Yanıtlayan Cookie: 0x%I64X, DH Grubu: %S, Şifreleme Algoritması: %S, Şifreleme Anahtar Boyutu: %u bit, Bütünlük Algoritması: %S, PRF Algoritması: %S, NAT Algılandı: %s
+LI2_IKE_SA_ESTABLISHED	IKEv2 IKE SA kuruldu. Başlatan Cookie: 0x%I64X, Yanıtlayan Cookie: 0x%I64X, İstemci Kimliği: %S, Aktarım Modu: %s, NAT Algılandı: %s, Alt SA Şifreleme Algoritması: %S (%u bit), Alt SA Bütünlük Algoritması: %S
+LI2_DELETE_IKE_SA	Bu IKEv2 IKE SA silindi.
+LI2_DELETE_IKE_CLIENT	Bu IKEv2 IPsec istemcisi silindi.
+LI2_DELETE_RECEIVED	İstemciden IKEv2 IKE SA silme isteği alındı.
+LI2_AUTH_FAILED	İstemcinin IKEv2 kimlik doğrulaması başarısız oldu.
+LI2_EAP_UNSUPPORTED	İstemci henüz desteklenmeyen EAP kimlik doğrulaması istedi.
+LI2_SK_ICV_ERROR	Alınan IKEv2 şifreli yükünün bütünlük denetimi başarısız oldu.
+LI2_INVALID_PACKET	Bozuk bir IKEv2 paketi alındı.
+LI2_CREATE_CHILD_SA_REJECTED	IKEv2 CREATE_CHILD_SA isteği reddedildi. Yeniden anahtarlama ve ek Alt SA'lar henüz desteklenmiyor.
+LI2_EAP_STARTED	IKEv2 EAP alışverişi başladı. İstemci Kimliği: %S
+LI2_FRAG_PEER_SUPPORTED	Eşin IKE parçalama desteği: %s
+LI2_IPC_CONNECTED	Sanal hub için IKEv2 IPC oturumu kuruldu. Sanal IP: %S
+LI2_IPC_FAILED	Sanal hub için IKEv2 IPC oturumu kurulamadı. Kullanıcı Adı: %S
+LI2_IPC_DISCONNECTED	Bu istemcinin IKEv2 IPC oturumu kesildi.
