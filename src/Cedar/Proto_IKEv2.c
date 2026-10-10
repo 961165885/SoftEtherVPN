@@ -40,6 +40,8 @@
 #include "Mayaqua/Memory.h"
 #include "Mayaqua/FileIO.h"
 #include "Mayaqua/Object.h"
+#include "Mayaqua/Internat.h"
+#include "Mayaqua/Cfg.h"
 #include "Mayaqua/Str.h"
 #include "Mayaqua/Table.h"
 #include "Mayaqua/TcpIp.h"
@@ -3086,6 +3088,7 @@ static bool IkeV2CreateChildSaPair(IKE_SERVER *ike, IKE_CLIENT *c, IKE_SA *sa,
 // (RFC 7296 section 2.9 traffic selector narrowing, as expected by
 // strongSwan and Apple clients).
 
+
 // ---- Split tunneling (M2) -------------------------------------------------
 // The backend writes a per-hub rule file "split_rules/<hub>.conf" next to
 // the vpnserver working directory when a connection is issued:
@@ -3104,7 +3107,6 @@ bool IkeV2ParseCidrToRange(char *s, UINT *start, UINT *end)
 {
 	UINT ip = 0, mask = 32, i;
 	char tmp[MAX_PATH];
-	char *slash;
 	UINT prefix;
 	// Validate arguments
 	if (s == NULL || start == NULL || end == NULL)
@@ -3115,16 +3117,18 @@ bool IkeV2ParseCidrToRange(char *s, UINT *start, UINT *end)
 	StrCpy(tmp, sizeof(tmp), s);
 	Trim(tmp);
 
-	slash = SearchStr(tmp, "/", 0);
-	if (slash != NULL)
 	{
-		*slash = 0;
-		prefix = ToInt(slash + 1);
-		if (prefix > 32)
+		UINT slash_pos = SearchStr(tmp, "/", 0);
+		if (slash_pos != INFINITE && slash_pos < StrLen(tmp))
 		{
-			return false;
+			tmp[slash_pos] = 0;
+			prefix = ToInt(&tmp[slash_pos + 1]);
+			if (prefix > 32)
+			{
+				return false;
+			}
+			mask = prefix;
 		}
-		mask = prefix;
 	}
 
 	if (StrToIP32(tmp) == 0)
@@ -3162,8 +3166,10 @@ IKEV2_TS *IkeV2NewTsRange(UINT start, UINT end)
 // Compares two ranges for sorting by start address.
 int IkeV2CompareTsRange(void *p1, void *p2)
 {
-	IKEV2_TS *a = (IKEV2_TS *)p1;
-	IKEV2_TS *b = (IKEV2_TS *)p2;
+	// qsort hands the comparator pointers to the list slots, not the items
+	// themselves - dereference twice like every other SoftEther comparator.
+	IKEV2_TS *a = *(IKEV2_TS **)p1;
+	IKEV2_TS *b = *(IKEV2_TS **)p2;
 	UINT as = IPToUINT(&a->StartAddress), bs = IPToUINT(&b->StartAddress);
 	if (as != bs) return (as < bs) ? -1 : 1;
 	return 0;
