@@ -122,6 +122,10 @@ void IkeV2MarkIkeClientDeleted(IKE_SERVER *ike, IKE_CLIENT *c)
 		return;
 	}
 
+	// Tell the peer before the SAs and the client are purged: the DELETE
+	// rides the still-armed IKE SA keys, so it must go out first
+	IkeV2SendDelete(ike, c);
+
 	ike->StateHasChanged = true;
 
 	c->Deleting = true;
@@ -133,6 +137,9 @@ void IkeV2MarkIkeClientDeleted(IKE_SERVER *ike, IKE_CLIENT *c)
 		if (sa->IkeClient == c && sa->Deleting == false)
 		{
 			sa->Deleting = true;
+			// Grace: keep the SA armed for a few seconds so the peer's own
+			// IKE DELETE exchange (it races ours) still gets answered
+			sa->V2DeletePurgeTick = ike->Now + (UINT64)IKE_V2_DELETE_PURGE_GRACE;
 		}
 	}
 
@@ -726,7 +733,8 @@ void IkeV2ProcSaInit(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, IKE_CLIE
 	// State transition: wait for IKE_AUTH (Message ID 1)
 	sa->V2State = IKEV2_STATE_SA_INIT_SENT;
 	sa->V2MsgIdRecvExpected = 1;
-	sa->V2MsgIdSendNext = 1;
+	// Responder-initiated requests (informational DELETE) start at 0
+	sa->V2MsgIdSendNext = 0;
 	sa->LastCommTick = ike->Now;
 
 	// Make this the client's current SA so that the long (non half-open)
@@ -2185,6 +2193,171 @@ void IkeV2SendEncryptedNotify(IKE_SERVER *ike, IKE_SA *sa, UCHAR exchange_type, 
 	payload_list = NewListSingle(IkeV2NewNotifyPayload(0, notify_type, NULL, 0, notify_data, notify_data_size));
 
 	IkeV2SendEncryptedResponse(ike, sa, exchange_type, message_id, payload_list);
+}
+
+// Send a responder-initiated INFORMATIONAL request carrying Delete payloads
+// for the client's Child SAs and the IKE SA itself. The IKE layer keeps
+// answering the peer's liveness checks regardless of the hub session, so
+// without an explicit DELETE a server-side teardown (admin kick, hub
+// release) leaves the client with an ESTABLISHED tunnel over a dead data
+// path and only its own polling can notice (RFC 7296 section 1.4).
+void IkeV2SendDelete(IKE_SERVER *ike, IKE_CLIENT *c)
+{
+	IKE_SA *sa;
+	LIST *payload_list;
+	LIST *spi_list;
+	IKE_PACKET_PAYLOAD *del;
+	BUF *spi;
+	UINT i, message_id;
+	IKE_HEADER h;
+	UCHAR iv[IKE_MAX_BLOCK_SIZE];
+	UCHAR icv[IKE_MAX_HASH_SIZE];
+	IKE_CRYPTO_PARAM cp;
+	UCHAR sk_header[4];
+	BUF *inner = NULL, *plain = NULL, *body = NULL, *msg = NULL;
+	UINT blocksize, icv_size, data_size, pad_len, sk_payload_size, msg_size;
+	// Validate arguments
+	if (ike == NULL || c == NULL)
+	{
+		return;
+	}
+
+	sa = c->CurrentIkeSa;
+	if (sa == NULL || sa->Established == false || sa->V2KeyEr == NULL || sa->TransformSetting.Crypto == NULL)
+	{
+		return;
+	}
+
+	payload_list = NewListFast(NULL);
+
+	// Child SAs (ESP): a single Delete payload carrying every SPI (the SPI
+	// size field is taken from the first entry, and all are 4 bytes)
+	spi_list = NewListFast(NULL);
+	for (i = 0; i < LIST_NUM(ike->IPsecSaList); i++)
+	{
+		IPSECSA *sa2 = LIST_DATA(ike->IPsecSaList, i);
+
+		if (sa2->IkeClient == c && sa2->Spi != 0)
+		{
+			spi = NewBuf();
+			WriteBufInt(spi, sa2->Spi);
+			Add(spi_list, spi);
+		}
+	}
+
+	if (LIST_NUM(spi_list) >= 1)
+	{
+		del = IkeV2NewDeletePayload(IKE_PROTOCOL_ID_IPSEC_ESP, spi_list);
+		if (del != NULL)
+		{
+			Add(payload_list, del);
+		}
+		else
+		{
+			for (i = 0; i < LIST_NUM(spi_list); i++)
+			{
+				FreeBuf(LIST_DATA(spi_list, i));
+			}
+			ReleaseList(spi_list);
+		}
+	}
+	else
+	{
+		ReleaseList(spi_list);
+	}
+
+	// The IKE SA itself (protocol IKE, no SPIs)
+	del = IkeV2NewDeletePayload(IKE_PROTOCOL_ID_IKE, NewListFast(NULL));
+	if (del != NULL)
+	{
+		Add(payload_list, del);
+	}
+
+	inner = IkeBuildPayloadList(payload_list);
+	if (inner == NULL)
+	{
+		IkeFreePayloadList(payload_list);
+		return;
+	}
+
+	message_id = sa->V2MsgIdSendNext++;
+
+	blocksize = sa->TransformSetting.Crypto->BlockSize;
+	icv_size = sa->TransformSetting.V2IntegIcvSize;
+
+	// Plaintext: inner payloads || padding || pad length (1 byte)
+	data_size = inner->Size;
+	pad_len = (blocksize - ((data_size + 1) % blocksize)) % blocksize;
+
+	plain = NewBuf();
+	WriteBufBuf(plain, inner);
+
+	for (i = 0; i < pad_len; i++)
+	{
+		UCHAR zero = 0;
+		WriteBuf(plain, &zero, 1);
+	}
+
+	{
+		UCHAR pad_len_byte = (UCHAR)pad_len;
+		WriteBuf(plain, &pad_len_byte, 1);
+	}
+
+	Rand(iv, blocksize);
+
+	Zero(&cp, sizeof(cp));
+	cp.Key = sa->V2KeyEr;
+	Copy(cp.Iv, iv, blocksize);
+
+	body = IkeEncrypt(plain->Buf, plain->Size, &cp);
+	if (body == NULL)
+	{
+		IkeFreePayloadList(payload_list);
+		FreeBuf(inner);
+		FreeBuf(plain);
+		return;
+	}
+
+	sk_payload_size = sizeof(sk_header) + blocksize + body->Size + icv_size;
+	msg_size = sizeof(h) + sk_payload_size;
+
+	Zero(&h, sizeof(h));
+	h.InitiatorCookie = Endian64(sa->InitiatorCookie);
+	h.ResponderCookie = Endian64(sa->ResponderCookie);
+	h.NextPayload = IKEV2_PAYLOAD_ENCRYPTED;
+	h.MajorVersion = IKE_MAJOR_VERSION_2;
+	h.MinorVersion = 0;
+	h.ExchangeType = IKE_EXCHANGE_TYPE_INFORMATIONAL;
+	// Responder-initiated request: neither the response nor the initiator
+	// flag is set
+	h.Flag = 0;
+	h.MessageId = Endian32(message_id);
+	h.MessageSize = Endian32(msg_size);
+
+	sk_header[0] = IkeGetFirstPayloadType(payload_list);
+	sk_header[1] = 0;
+	sk_header[2] = (UCHAR)((sk_payload_size >> 8) & 0xff);
+	sk_header[3] = (UCHAR)(sk_payload_size & 0xff);
+
+	msg = NewBuf();
+	WriteBuf(msg, &h, sizeof(h));
+	WriteBuf(msg, sk_header, sizeof(sk_header));
+	WriteBuf(msg, iv, blocksize);
+	WriteBufBuf(msg, body);
+
+	IkeHMac(sa->TransformSetting.Hash, icv, sa->V2SkAr, sa->TransformSetting.Hash->HashSize,
+		msg->Buf, msg->Size);
+
+	WriteBuf(msg, icv, icv_size);
+
+	IkeSendUdpPacket(ike, IKE_UDP_TYPE_ISAKMP, &c->ServerIP, c->ServerPort,
+		&c->ClientIP, c->ClientPort, Clone(msg->Buf, msg->Size), msg->Size);
+
+	IkeFreePayloadList(payload_list);
+	FreeBuf(inner);
+	FreeBuf(plain);
+	FreeBuf(body);
+	FreeBuf(msg);
 }
 
 // Send a plain (unencrypted) response that contains only an error notify.
@@ -4908,7 +5081,7 @@ static void IkeV2ProcIkeSaRekey(IKE_SERVER *ike, IKE_PACKET *header, IKE_CLIENT 
 	new_sa->Established = true;
 	new_sa->EstablishedTick = ike->Now;
 	new_sa->V2MsgIdRecvExpected = 1;
-	new_sa->V2MsgIdSendNext = 1;
+	new_sa->V2MsgIdSendNext = 0;
 	new_sa->V2NatDetected = sa->V2NatDetected;
 	StrCpy(new_sa->Secret, sizeof(new_sa->Secret), sa->Secret);
 

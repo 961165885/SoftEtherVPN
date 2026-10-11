@@ -5317,6 +5317,13 @@ void PurgeDeletingSAsAndClients(IKE_SERVER *ike)
 		IKE_SA *sa = LIST_DATA(ike->IkeSaList, i);
 		if (sa->Deleting)
 		{
+			// v2 grace: a Deleting IKE SA stays armed briefly so the peer's
+			// own DELETE exchange (it races our purge) still gets answered
+			if (sa->MajorVersion == IKE_MAJOR_VERSION_2 && sa->V2DeletePurgeTick > ike->Now)
+			{
+				continue;
+			}
+
 			if (o == NULL)
 			{
 				o = NewListFast(NULL);
@@ -5367,6 +5374,14 @@ void PurgeDeletingSAsAndClients(IKE_SERVER *ike)
 		IKE_CLIENT *c = LIST_DATA(ike->ClientList, i);
 		if (c->Deleting)
 		{
+			// v2 clients go when their (graced) IKE SA has been purged:
+			// PurgeIkeSa clears CurrentIkeSa, and the client must survive
+			// it so incoming packets during the grace still find it
+			if (c->CurrentIkeSa != NULL)
+			{
+				continue;
+			}
+
 			if (o == NULL)
 			{
 				o = NewListFast(NULL);

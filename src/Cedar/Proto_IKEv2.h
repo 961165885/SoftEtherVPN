@@ -33,6 +33,7 @@ void IkeV2SendEncryptedNotify(IKE_SERVER *ike, IKE_SA *sa, UCHAR exchange_type, 
 							  USHORT notify_type, void *notify_data, UINT notify_data_size);
 void IkeV2SendPlainNotifyResponse(IKE_SERVER *ike, IKE_CLIENT *c, IKE_PACKET *header,
 								   USHORT notify_type, void *notify_data, UINT notify_data_size);
+void IkeV2SendDelete(IKE_SERVER *ike, IKE_CLIENT *c);
 void IkeV2MarkIkeSaDeleted(IKE_SERVER *ike, IKE_SA *sa);
 void IkeV2MarkIkeClientDeleted(IKE_SERVER *ike, IKE_CLIENT *c);
 

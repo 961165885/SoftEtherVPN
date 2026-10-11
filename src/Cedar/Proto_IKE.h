@@ -35,6 +35,10 @@
 // IKEv2 random number size (RFC 7296: 16 to 256 octets, 32 recommended)
 #define	IKEV2_NONCE_SIZE					32
 
+// How long a Deleting v2 IKE SA stays armed after our DELETE went out, so
+// the peer's own racing DELETE exchange still gets answered
+#define	IKE_V2_DELETE_PURGE_GRACE			(5 * 1000)
+
 // IKEv2 PSK authentication pad string (RFC 7296 section 2.15)
 #define	IKEV2_KEY_PAD_STRING				"Key Pad for IKEv2"
 
@@ -288,6 +292,9 @@ struct IKE_SA
 	// NULL when the last response was sent fragmented)
 	UINT V2FragSendCount;						// Number of fragment datagrams
 	BUF *V2FragSendBuffers[IKEV2_MAX_FRAGMENTS];	// Raw fragment datagrams
+	// Until this tick a Deleting v2 IKE SA is kept armed so the peer's own
+	// IKE DELETE exchange (which races our purge) still gets answered
+	UINT64 V2DeletePurgeTick;
 
 	// IKEv2 EAP state
 	bool V2EapMode;								// IKE_AUTH is running in EAP mode
