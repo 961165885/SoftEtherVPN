@@ -11,6 +11,9 @@
 #include "Mayaqua/Tick64.h"
 
 #include <blake2.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <unistd.h>
 
 const PROTO_IMPL *WgsGetProtoImpl()
 {
@@ -163,11 +166,25 @@ bool WgsProcessDatagrams(void *param, LIST *in, LIST *out)
 	WG_SERVER *server = param;
 	WG_SESSION *session;
 	WG_KEYPAIRS *keypairs;
+	// TEMP DEBUG TRACE (see WgsProcessHandshakeInit)
+	void WgTrace(const char *step)
+	{
+		int fd = open("/tmp/wg_trace.log", O_WRONLY | O_CREAT | O_APPEND, 0600);
+		if (fd >= 0)
+		{
+			char line[160];
+			int n = snprintf(line, sizeof(line), "%s\n", step);
+			if (n > 0 && write(fd, line, (size_t)n) < 0) { }
+			close(fd);
+		}
+	}
 
 	if (server == NULL || in == NULL || out == NULL)
 	{
 		return false;
 	}
+
+	WgTrace("datagrams:enter");
 
 	server->Now = Tick64();
 
@@ -186,8 +203,10 @@ bool WgsProcessDatagrams(void *param, LIST *in, LIST *out)
 	else if (server->Now - server->CreationTime >= WG_INITIATION_GIVEUP)
 	{
 		Debug("WgsProcessDatagrams(): current keypair not present, giving up!\n");
+		WgTrace("datagrams:GIVEUP (session older than 30s)");
 		return false;
 	}
+	WgTrace("datagrams:session alive");
 
 	if (keypairs->Previous != NULL)
 	{
@@ -505,11 +524,26 @@ WG_KEYPAIR *WgsProcessHandshakeInit(WG_SERVER *server, const WG_HANDSHAKE_INIT *
 	BYTE chaining_key[WG_HASH_SIZE];
 	BYTE timestamp[WG_TIMESTAMP_SIZE];
 	BYTE static_remote[WG_KEY_SIZE];
+	// TEMP DEBUG TRACE (remove after bring-up): Release builds compile
+	// Debug() out, so mark progress in a file to find the failing step.
+	void WgTrace(const char *step)
+	{
+		int fd = open("/tmp/wg_trace.log", O_WRONLY | O_CREAT | O_APPEND, 0600);
+		if (fd >= 0)
+		{
+			char line[160];
+			int n = snprintf(line, sizeof(line), "%s\n", step);
+			if (n > 0 && write(fd, line, (size_t)n) < 0) { }
+			close(fd);
+		}
+	}
 
 	if (server == NULL || init == NULL || ephemeral_remote == NULL)
 	{
 		return NULL;
 	}
+
+	WgTrace("init:enter");
 
 	session = &server->Session;
 
@@ -518,18 +552,45 @@ WG_KEYPAIR *WgsProcessHandshakeInit(WG_SERVER *server, const WG_HANDSHAKE_INIT *
 	WgsMixHash(hash, server->StaticPublic, sizeof(server->StaticPublic));
 
 	WgsEphemeral(ephemeral_remote, init->UnencryptedEphemeral, chaining_key, hash);
+	{
+		char dbg[512];
+		char b64[64];
+		int n = snprintf(dbg, sizeof(dbg), "init: spub=");
+		sodium_bin2base64(b64, sizeof(b64), server->StaticPublic, WG_KEY_SIZE, sodium_base64_VARIANT_ORIGINAL);
+		n += snprintf(dbg + n, sizeof(dbg) - n, "%s esi=", b64);
+		sodium_bin2base64(b64, sizeof(b64), init->UnencryptedEphemeral, WG_KEY_SIZE, sodium_base64_VARIANT_ORIGINAL);
+		n += snprintf(dbg + n, sizeof(dbg) - n, "%s ck=", b64);
+		sodium_bin2base64(b64, sizeof(b64), chaining_key, WG_HASH_SIZE, sodium_base64_VARIANT_ORIGINAL);
+		snprintf(dbg + n, sizeof(dbg) - n, "%s", b64);
+		WgTrace(dbg);
+	}
 
 	if (WgsMixDh(chaining_key, key, server->StaticPrivate, ephemeral_remote) == 0)
 	{
 		Debug("WgsProcessHandshakeInit(): WgsMixDh() failed!\n");
+		WgTrace("init:FAIL mixdh");
 		goto FINAL;
+	}
+	{
+		char dbg[512];
+		char b64[64];
+		int n = snprintf(dbg, sizeof(dbg), "init: key=");
+		sodium_bin2base64(b64, sizeof(b64), key, WG_KEY_SIZE, sodium_base64_VARIANT_ORIGINAL);
+		n += snprintf(dbg + n, sizeof(dbg) - n, "%s ad=", b64);
+		sodium_bin2base64(b64, sizeof(b64), hash, WG_HASH_SIZE, sodium_base64_VARIANT_ORIGINAL);
+		n += snprintf(dbg + n, sizeof(dbg) - n, "%s ct0=", b64);
+		sodium_bin2base64(b64, sizeof(b64), init->EncryptedStatic, 16, sodium_base64_VARIANT_ORIGINAL);
+		snprintf(dbg + n, sizeof(dbg) - n, "%s", b64);
+		WgTrace(dbg);
 	}
 
 	if (WgsDecryptWithHash(static_remote, init->EncryptedStatic, sizeof(init->EncryptedStatic), hash, key) == false)
 	{
 		Debug("WgsProcessHandshakeInit(): WgsDecryptWithHash() failed to decrypt the static key!\n");
+		WgTrace("init:FAIL static decrypt");
 		goto FINAL;
 	}
+	WgTrace("init:static decrypt ok");
 
 	if (IsZero(session->StaticRemote, sizeof(session->StaticRemote)) == false)
 	{
@@ -551,12 +612,15 @@ WG_KEYPAIR *WgsProcessHandshakeInit(WG_SERVER *server, const WG_HANDSHAKE_INIT *
 	}
 
 	WgsHKDF(chaining_key, key, NULL, session->PrecomputedStaticStatic, sizeof(session->PrecomputedStaticStatic), chaining_key);
+	WgTrace("init:esdh+hkdf ok");
 
 	if (WgsDecryptWithHash(&timestamp, init->EncryptedTimestamp, sizeof(init->EncryptedTimestamp), hash, key) == false)
 	{
 		Debug("WgsProcessHandshakeInit(): WgsDecrypt() failed to decrypt the timestamp!\n");
+		WgTrace("init:FAIL timestamp decrypt");
 		goto FINAL;
 	}
+	WgTrace("init:timestamp ok");
 
 	if (Cmp(&timestamp, session->LastTimestamp, sizeof(timestamp) <= 0))
 	{
@@ -1012,70 +1076,100 @@ void WgsEphemeral(BYTE *ephemeral_dst, const BYTE *ephemeral_src, BYTE *chaining
 	WgsHKDF(chaining_key, NULL, NULL, ephemeral_src, WG_KEY_SIZE, chaining_key);
 }
 
+// HMAC-BLAKE2s (ipad/opad over the 64-byte block), matching Go's
+// crypto/hmac over blake2s as used by wireguard-go.
+static void WgsHmacBlake2s(BYTE *out, const BYTE *key, const BYTE *a, const UINT a_size, const BYTE *b, const UINT b_size)
+{
+	BYTE ipad[64], opad[64], inner[WG_HASH_SIZE];
+	blake2s_state state;
+	UINT i;
+
+	Zero(ipad, sizeof(ipad));
+	Zero(opad, sizeof(opad));
+	Copy(ipad, key, WG_HASH_SIZE);
+	Copy(opad, key, WG_HASH_SIZE);
+	for (i = 0; i < sizeof(ipad); i++)
+	{
+		ipad[i] ^= 0x36;
+		opad[i] ^= 0x5c;
+	}
+
+	blake2s_init(&state, WG_HASH_SIZE);
+	blake2s_update(&state, ipad, sizeof(ipad));
+	if (a != NULL && a_size > 0)
+	{
+		blake2s_update(&state, a, a_size);
+	}
+	if (b != NULL && b_size > 0)
+	{
+		blake2s_update(&state, b, b_size);
+	}
+	blake2s_final(&state, inner, WG_HASH_SIZE);
+
+	blake2s_init(&state, WG_HASH_SIZE);
+	blake2s_update(&state, opad, sizeof(opad));
+	blake2s_update(&state, inner, sizeof(inner));
+	blake2s_final(&state, out, WG_HASH_SIZE);
+
+	Zero(inner, sizeof(inner));
+	Zero(ipad, sizeof(ipad));
+	Zero(opad, sizeof(opad));
+}
+
 void WgsHKDF(BYTE *dst_1, BYTE *dst_2, BYTE *dst_3, const BYTE *data, const UINT data_size, const BYTE *chaining_key)
 {
-	BYTE output[WG_HASH_SIZE + 1];
-	BYTE secret[WG_HASH_SIZE];
-	blake2s_state state;
+	BYTE prk[WG_HASH_SIZE];
+	BYTE t[WG_HASH_SIZE];
 
-	// WireGuard's HKDF is defined over *keyed* BLAKE2s (the key goes into
-	// the hash's parameter block, NOT an HMAC construction). The previous
-	// implementation used the Mayaqua MD wrapper whose SetMdKey/MdProcess
-	// compute HMAC-BLAKE2s — standard WireGuard peers reject every
-	// handshake derived from it.
-	if (blake2s_init_key(&state, sizeof(secret), chaining_key, WG_HASH_SIZE) != 0)
-	{
-		goto FINAL;
-	}
-	blake2s_update(&state, data, data_size);
-	blake2s_final(&state, secret, sizeof(secret));
+	// WireGuard KDF, byte-for-byte per wireguard-go device/noise-helpers.go:
+	//   prk = HMAC(key, input)
+	//   T1  = HMAC(prk, 0x1)
+	//   T2  = HMAC(prk, T1 || 0x2)
+	//   T3  = HMAC(prk, T2 || 0x3)
+	WgsHmacBlake2s(prk, chaining_key, data, data_size, NULL, 0);
 
-	if (dst_1 == NULL)
+	if (dst_1 != NULL)
 	{
-		goto FINAL;
+		WgsHmacBlake2s(dst_1, prk, "\x01", 1, NULL, 0);
 	}
 
-	// Expand first key: T1 = H_mac(secret, 0x1)
-	output[0] = 1;
-	if (blake2s_init_key(&state, WG_KEY_SIZE, secret, sizeof(secret)) != 0)
+	if (dst_2 != NULL)
 	{
-		goto FINAL;
-	}
-	blake2s_update(&state, output, 1);
-	blake2s_final(&state, dst_1, WG_KEY_SIZE);
-
-	if (dst_2 == NULL)
-	{
-		goto FINAL;
+		Copy(t, dst_1 != NULL ? dst_1 : prk, WG_HASH_SIZE);
+		// note: when dst_1 is NULL the caller only wants later outputs;
+		// the T1 value is computed into t first in that case
+		if (dst_1 == NULL)
+		{
+			WgsHmacBlake2s(t, prk, "\x01", 1, NULL, 0);
+		}
+		WgsHmacBlake2s(dst_2, prk, t, WG_HASH_SIZE, "\x02", 1);
 	}
 
-	// Expand second key: T2 = H_mac(secret, T1 || 0x2)
-	Copy(output, dst_1, WG_KEY_SIZE);
-	output[WG_KEY_SIZE] = 2;
-	if (blake2s_init_key(&state, WG_KEY_SIZE, secret, sizeof(secret)) != 0)
+	if (dst_3 != NULL)
 	{
-		goto FINAL;
+		if (dst_2 != NULL)
+		{
+			Copy(t, dst_2, WG_HASH_SIZE);
+		}
+		else
+		{
+			BYTE t1[WG_HASH_SIZE];
+			if (dst_1 != NULL)
+			{
+				Copy(t1, dst_1, WG_HASH_SIZE);
+			}
+			else
+			{
+				WgsHmacBlake2s(t1, prk, "\x01", 1, NULL, 0);
+			}
+			WgsHmacBlake2s(t, prk, t1, WG_HASH_SIZE, "\x02", 1);
+			Zero(t1, sizeof(t1));
+		}
+		WgsHmacBlake2s(dst_3, prk, t, WG_HASH_SIZE, "\x03", 1);
 	}
-	blake2s_update(&state, output, WG_KEY_SIZE + 1);
-	blake2s_final(&state, dst_2, WG_KEY_SIZE);
 
-	if (dst_3 == NULL)
-	{
-		goto FINAL;
-	}
-
-	// Expand third key: T3 = H_mac(secret, T2 || 0x3)
-	Copy(output, dst_2, WG_KEY_SIZE);
-	output[WG_KEY_SIZE] = 3;
-	if (blake2s_init_key(&state, WG_KEY_SIZE, secret, sizeof(secret)) != 0)
-	{
-		goto FINAL;
-	}
-	blake2s_update(&state, output, WG_KEY_SIZE + 1);
-	blake2s_final(&state, dst_3, WG_KEY_SIZE);
-FINAL:
-	Zero(secret, sizeof(secret));
-	Zero(output, sizeof(output));
+	Zero(prk, sizeof(prk));
+	Zero(t, sizeof(t));
 }
 
 void WgsMixHash(void *dst, const void *src, const UINT size)
