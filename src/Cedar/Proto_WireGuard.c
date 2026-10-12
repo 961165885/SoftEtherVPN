@@ -11,9 +11,7 @@
 #include "Mayaqua/Tick64.h"
 
 #include <blake2.h>
-#include <fcntl.h>
-#include <stdio.h>
-#include <unistd.h>
+
 
 const PROTO_IMPL *WgsGetProtoImpl()
 {
@@ -166,25 +164,12 @@ bool WgsProcessDatagrams(void *param, LIST *in, LIST *out)
 	WG_SERVER *server = param;
 	WG_SESSION *session;
 	WG_KEYPAIRS *keypairs;
-	// TEMP DEBUG TRACE (see WgsProcessHandshakeInit)
-	void WgTrace(const char *step)
-	{
-		int fd = open("/tmp/wg_trace.log", O_WRONLY | O_CREAT | O_APPEND, 0600);
-		if (fd >= 0)
-		{
-			char line[160];
-			int n = snprintf(line, sizeof(line), "%s\n", step);
-			if (n > 0 && write(fd, line, (size_t)n) < 0) { }
-			close(fd);
-		}
-	}
 
 	if (server == NULL || in == NULL || out == NULL)
 	{
 		return false;
 	}
 
-	WgTrace("datagrams:enter");
 
 	server->Now = Tick64();
 
@@ -203,10 +188,8 @@ bool WgsProcessDatagrams(void *param, LIST *in, LIST *out)
 	else if (server->Now - server->CreationTime >= WG_INITIATION_GIVEUP)
 	{
 		Debug("WgsProcessDatagrams(): current keypair not present, giving up!\n");
-		WgTrace("datagrams:GIVEUP (session older than 30s)");
 		return false;
 	}
-	WgTrace("datagrams:session alive");
 
 	if (keypairs->Previous != NULL)
 	{
@@ -524,26 +507,12 @@ WG_KEYPAIR *WgsProcessHandshakeInit(WG_SERVER *server, const WG_HANDSHAKE_INIT *
 	BYTE chaining_key[WG_HASH_SIZE];
 	BYTE timestamp[WG_TIMESTAMP_SIZE];
 	BYTE static_remote[WG_KEY_SIZE];
-	// TEMP DEBUG TRACE (remove after bring-up): Release builds compile
-	// Debug() out, so mark progress in a file to find the failing step.
-	void WgTrace(const char *step)
-	{
-		int fd = open("/tmp/wg_trace.log", O_WRONLY | O_CREAT | O_APPEND, 0600);
-		if (fd >= 0)
-		{
-			char line[160];
-			int n = snprintf(line, sizeof(line), "%s\n", step);
-			if (n > 0 && write(fd, line, (size_t)n) < 0) { }
-			close(fd);
-		}
-	}
 
 	if (server == NULL || init == NULL || ephemeral_remote == NULL)
 	{
 		return NULL;
 	}
 
-	WgTrace("init:enter");
 
 	session = &server->Session;
 
@@ -552,45 +521,18 @@ WG_KEYPAIR *WgsProcessHandshakeInit(WG_SERVER *server, const WG_HANDSHAKE_INIT *
 	WgsMixHash(hash, server->StaticPublic, sizeof(server->StaticPublic));
 
 	WgsEphemeral(ephemeral_remote, init->UnencryptedEphemeral, chaining_key, hash);
-	{
-		char dbg[512];
-		char b64[64];
-		int n = snprintf(dbg, sizeof(dbg), "init: spub=");
-		sodium_bin2base64(b64, sizeof(b64), server->StaticPublic, WG_KEY_SIZE, sodium_base64_VARIANT_ORIGINAL);
-		n += snprintf(dbg + n, sizeof(dbg) - n, "%s esi=", b64);
-		sodium_bin2base64(b64, sizeof(b64), init->UnencryptedEphemeral, WG_KEY_SIZE, sodium_base64_VARIANT_ORIGINAL);
-		n += snprintf(dbg + n, sizeof(dbg) - n, "%s ck=", b64);
-		sodium_bin2base64(b64, sizeof(b64), chaining_key, WG_HASH_SIZE, sodium_base64_VARIANT_ORIGINAL);
-		snprintf(dbg + n, sizeof(dbg) - n, "%s", b64);
-		WgTrace(dbg);
-	}
 
 	if (WgsMixDh(chaining_key, key, server->StaticPrivate, ephemeral_remote) == 0)
 	{
 		Debug("WgsProcessHandshakeInit(): WgsMixDh() failed!\n");
-		WgTrace("init:FAIL mixdh");
 		goto FINAL;
-	}
-	{
-		char dbg[512];
-		char b64[64];
-		int n = snprintf(dbg, sizeof(dbg), "init: key=");
-		sodium_bin2base64(b64, sizeof(b64), key, WG_KEY_SIZE, sodium_base64_VARIANT_ORIGINAL);
-		n += snprintf(dbg + n, sizeof(dbg) - n, "%s ad=", b64);
-		sodium_bin2base64(b64, sizeof(b64), hash, WG_HASH_SIZE, sodium_base64_VARIANT_ORIGINAL);
-		n += snprintf(dbg + n, sizeof(dbg) - n, "%s ct0=", b64);
-		sodium_bin2base64(b64, sizeof(b64), init->EncryptedStatic, 16, sodium_base64_VARIANT_ORIGINAL);
-		snprintf(dbg + n, sizeof(dbg) - n, "%s", b64);
-		WgTrace(dbg);
 	}
 
 	if (WgsDecryptWithHash(static_remote, init->EncryptedStatic, sizeof(init->EncryptedStatic), hash, key) == false)
 	{
 		Debug("WgsProcessHandshakeInit(): WgsDecryptWithHash() failed to decrypt the static key!\n");
-		WgTrace("init:FAIL static decrypt");
 		goto FINAL;
 	}
-	WgTrace("init:static decrypt ok");
 
 	if (IsZero(session->StaticRemote, sizeof(session->StaticRemote)) == false)
 	{
@@ -612,15 +554,12 @@ WG_KEYPAIR *WgsProcessHandshakeInit(WG_SERVER *server, const WG_HANDSHAKE_INIT *
 	}
 
 	WgsHKDF(chaining_key, key, NULL, session->PrecomputedStaticStatic, sizeof(session->PrecomputedStaticStatic), chaining_key);
-	WgTrace("init:esdh+hkdf ok");
 
 	if (WgsDecryptWithHash(&timestamp, init->EncryptedTimestamp, sizeof(init->EncryptedTimestamp), hash, key) == false)
 	{
 		Debug("WgsProcessHandshakeInit(): WgsDecrypt() failed to decrypt the timestamp!\n");
-		WgTrace("init:FAIL timestamp decrypt");
 		goto FINAL;
 	}
-	WgTrace("init:timestamp ok");
 
 	if (Cmp(&timestamp, session->LastTimestamp, sizeof(timestamp) <= 0))
 	{
