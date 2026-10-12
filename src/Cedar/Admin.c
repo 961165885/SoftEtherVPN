@@ -14592,7 +14592,14 @@ void InRpcWgk(RPC_WGK *t, PACK *p)
 
 	Zero(t, sizeof(RPC_WGK));
 
-	t->Num = PackGetIndexCount(p, "Key");
+	// The JSON-RPC gateway routes parameters by value-type suffix (_str,
+	// _u32, ...); the historical bare names only work on the binary
+	// protocol, so both spellings are accepted here.
+	t->Num = PackGetIndexCount(p, "Key_str");
+	if (t->Num == 0)
+	{
+		t->Num = PackGetIndexCount(p, "Key");
+	}
 	if (t->Num == 0)
 	{
 		return;
@@ -14604,9 +14611,18 @@ void InRpcWgk(RPC_WGK *t, PACK *p)
 	{
 		WGK *wgk = &t->Wgks[i];
 
-		PackGetStrEx(p, "Key", wgk->Key, sizeof(wgk->Key), i);
-		PackGetStrEx(p, "Hub", wgk->Hub, sizeof(wgk->Hub), i);
-		PackGetStrEx(p, "User", wgk->User, sizeof(wgk->User), i);
+		if (PackGetStrEx(p, "Key_str", wgk->Key, sizeof(wgk->Key), i) == false)
+		{
+			PackGetStrEx(p, "Key", wgk->Key, sizeof(wgk->Key), i);
+		}
+		if (PackGetStrEx(p, "Hub_str", wgk->Hub, sizeof(wgk->Hub), i) == false)
+		{
+			PackGetStrEx(p, "Hub", wgk->Hub, sizeof(wgk->Hub), i);
+		}
+		if (PackGetStrEx(p, "User_str", wgk->User, sizeof(wgk->User), i) == false)
+		{
+			PackGetStrEx(p, "User", wgk->User, sizeof(wgk->User), i);
+		}
 	}
 }
 void OutRpcWgk(PACK *p, RPC_WGK *t)
@@ -14622,9 +14638,9 @@ void OutRpcWgk(PACK *p, RPC_WGK *t)
 	{
 		WGK *wgk = &t->Wgks[i];
 
-		PackAddStrEx(p, "Key", wgk->Key, i, t->Num);
-		PackAddStrEx(p, "Hub", wgk->Hub, i, t->Num);
-		PackAddStrEx(p, "User", wgk->User, i, t->Num);
+		PackAddStrEx(p, "Key_str", wgk->Key, i, t->Num);
+		PackAddStrEx(p, "Hub_str", wgk->Hub, i, t->Num);
+		PackAddStrEx(p, "User_str", wgk->User, i, t->Num);
 	}
 }
 void FreeRpcWgk(RPC_WGK *t)

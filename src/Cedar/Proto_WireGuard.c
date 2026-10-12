@@ -1016,46 +1016,64 @@ void WgsHKDF(BYTE *dst_1, BYTE *dst_2, BYTE *dst_3, const BYTE *data, const UINT
 {
 	BYTE output[WG_HASH_SIZE + 1];
 	BYTE secret[WG_HASH_SIZE];
+	blake2s_state state;
 
-	MD *md = NewMd("BLAKE2s256");
-	SetMdKey(md, chaining_key, WG_HASH_SIZE);
-
-	// Extract entropy from data into secret.
-	MdProcess(md, secret, data, data_size);
+	// WireGuard's HKDF is defined over *keyed* BLAKE2s (the key goes into
+	// the hash's parameter block, NOT an HMAC construction). The previous
+	// implementation used the Mayaqua MD wrapper whose SetMdKey/MdProcess
+	// compute HMAC-BLAKE2s — standard WireGuard peers reject every
+	// handshake derived from it.
+	if (blake2s_init_key(&state, sizeof(secret), chaining_key, WG_HASH_SIZE) != 0)
+	{
+		goto FINAL;
+	}
+	blake2s_update(&state, data, data_size);
+	blake2s_final(&state, secret, sizeof(secret));
 
 	if (dst_1 == NULL)
 	{
 		goto FINAL;
 	}
 
-	SetMdKey(md, secret, sizeof(secret));
-
-	// Expand first key
+	// Expand first key: T1 = H_mac(secret, 0x1)
 	output[0] = 1;
-	MdProcess(md, output, output, 1);
-	Copy(dst_1, output, WG_KEY_SIZE);
+	if (blake2s_init_key(&state, WG_KEY_SIZE, secret, sizeof(secret)) != 0)
+	{
+		goto FINAL;
+	}
+	blake2s_update(&state, output, 1);
+	blake2s_final(&state, dst_1, WG_KEY_SIZE);
 
 	if (dst_2 == NULL)
 	{
 		goto FINAL;
 	}
 
-	// Expand second key
-	output[sizeof(output) - 1] = 2;
-	MdProcess(md, output, output, sizeof(output));
-	Copy(dst_2, output, WG_KEY_SIZE);
+	// Expand second key: T2 = H_mac(secret, T1 || 0x2)
+	Copy(output, dst_1, WG_KEY_SIZE);
+	output[WG_KEY_SIZE] = 2;
+	if (blake2s_init_key(&state, WG_KEY_SIZE, secret, sizeof(secret)) != 0)
+	{
+		goto FINAL;
+	}
+	blake2s_update(&state, output, WG_KEY_SIZE + 1);
+	blake2s_final(&state, dst_2, WG_KEY_SIZE);
 
 	if (dst_3 == NULL)
 	{
 		goto FINAL;
 	}
 
-	// Expand third key
-	output[sizeof(output) - 1] = 3;
-	MdProcess(md, output, output, sizeof(output));
-	Copy(dst_3, output, WG_KEY_SIZE);
+	// Expand third key: T3 = H_mac(secret, T2 || 0x3)
+	Copy(output, dst_2, WG_KEY_SIZE);
+	output[WG_KEY_SIZE] = 3;
+	if (blake2s_init_key(&state, WG_KEY_SIZE, secret, sizeof(secret)) != 0)
+	{
+		goto FINAL;
+	}
+	blake2s_update(&state, output, WG_KEY_SIZE + 1);
+	blake2s_final(&state, dst_3, WG_KEY_SIZE);
 FINAL:
-	FreeMd(md);
 	Zero(secret, sizeof(secret));
 	Zero(output, sizeof(output));
 }
