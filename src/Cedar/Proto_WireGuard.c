@@ -305,6 +305,8 @@ bool WgsProcessDatagrams(void *param, LIST *in, LIST *out)
 			break;
 		}
 
+		WgsTrace(server, "[WG-TRACE] IPC->client block size=%u arp_entries=%u", block->Size, LIST_NUM(session->IPC->ArpTable));
+
 		data = WgsCreateTransportData(server, block->Buf, block->Size, &final_size);
 
 		FreeBlock(block);
@@ -366,6 +368,26 @@ void WgsLog(const WG_SERVER *server, const char *name, ...)
 	va_end(args);
 
 	WriteServerLog(server->Cedar, message);
+}
+
+// Temporary data-path tracing: plain-text line in the server log.
+void WgsTrace(const WG_SERVER *server, const char *fmt, ...)
+{
+	char message[MAX_SIZE * 2];
+	va_list args;
+
+	if (server == NULL)
+	{
+		return;
+	}
+
+	va_start(args, fmt);
+	FormatArgs(message, sizeof(message), fmt, args);
+	va_end(args);
+
+	wchar_t wmessage[MAX_SIZE * 2];
+	StrToUni(wmessage, sizeof(wmessage), message);
+	WriteServerLog(server->Cedar, wmessage);
 }
 
 WG_MSG_TYPE WgsDetectMessageType(const void *data, const UINT size)
@@ -784,15 +806,41 @@ bool WgsProcessTransportData(WG_SERVER *server, WG_TRANSPORT_DATA *data, const U
 			}
 
 			UINTToIP(&ip, pkt.L3.IPv4Header->SrcIP);
-			IPCSetIPv4Parameters(ipc, &ip, &ipc->SubnetMask, &ipc->DefaultGateway, NULL);
+
+			// The IPC never runs DHCP, and hub->Option carries no gateway
+			// unless the admin set one, so ipc->SubnetMask/DefaultGateway
+			// are all-zero here and every off-link packet is dropped
+			// inside the IPC. WireGuard clients claim a static address in
+			// the SecureNAT subnet, so fall back to the SecureNAT defaults
+			// (192.168.30.1/24) whenever the hub option is unset.
+			IP subnet_mask, default_gateway;
+			// IPToUINT/UINTToIP pack bytes little-endian: 192.168.30.1 is
+			// 0x011EA8C0, 255.255.255.0 is 0x00FFFFFF.
+			UINTToIP(&subnet_mask, 0x00FFFFFFu);
+			UINTToIP(&default_gateway, 0x011EA8C0u);
+			if (IsZeroIP(&ipc->SubnetMask) == false)
+			{
+				Copy(&subnet_mask, &ipc->SubnetMask, sizeof(IP));
+			}
+			if (IsZeroIP(&ipc->DefaultGateway) == false)
+			{
+				Copy(&default_gateway, &ipc->DefaultGateway, sizeof(IP));
+			}
+			IPCSetIPv4Parameters(ipc, &ip, &subnet_mask, &default_gateway, NULL);
 
 			IPCSetSockEventWhenRecvL2Packet(ipc, server->SockEvent);
 
 			IPC_PROTO_SET_STATUS(ipc, IPv4State, IPC_PROTO_STATUS_OPENED);
 
 			session->IPC = ipc;
+
+			char ipbuf[64], gwbuf[64];
+			IPToStr(ipbuf, sizeof(ipbuf), &ip);
+			IPToStr(gwbuf, sizeof(gwbuf), &default_gateway);
+			WgsTrace(server, "[WG-TRACE] IPC created: client=%s gw=%s connected=%u", ipbuf, gwbuf, IsIPCConnected(session->IPC) ? 1 : 0);
 		}
 
+		WgsTrace(server, "[WG-TRACE] IPCSendIPv4 size=%u", written);
 		IPCSendIPv4(session->IPC, data->EncapsulatedPacket, written);
 	}
 
