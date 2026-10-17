@@ -70,3 +70,10 @@ void IkeV2CheckNatD(IKE_SERVER *ike, IKE_PACKET *pr, UDPPACKET *p, IKE_PACKET *h
 IKE_HASH *IkeV2GetSha1(IKE_SERVER *ike);
 
 #endif	// PROTO_IKEV2_H
+
+// DNS-driven dynamic split ranges (fed by the SecureNAT DNS proxy)
+void MsTrace(char *fmt, ...);
+void IkeV2DnsFeed(char *hubname, char *qname, IP *ip);
+bool IkeV2DnsQueryFeed(char *hubname, char *qname);
+void IkeV2DynGetCsv(char *hubname, char *csv, UINT csv_size);
+void IkeV2DynClear(char *hubname);

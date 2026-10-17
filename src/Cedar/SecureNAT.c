@@ -143,6 +143,11 @@ SNAT *SnNewSecureNAT(HUB *h, VH_OPTION *o)
 	s->Hub = h;
 	s->lock = NewLock();
 
+	// Anchor the hub name into the option once: the DNS-driven split
+	// hook in Virtual.c reads it on every query and must not walk
+	// live SNAT/HUB pointers from the packet path.
+	StrCpy(o->HubName, sizeof(o->HubName), h->Name);
+
 	// Create a NAT
 	s->Nat = NiNewNatEx(s, o);
 

@@ -6,6 +6,9 @@
 // User-mode virtual host program
 
 #include "Virtual.h"
+#include "Nat.h"
+#include "SecureNAT.h"
+#include "Proto_IKEv2.h"
 
 #include "BridgeUnix.h"
 #include "BridgeWin32.h"
@@ -6850,6 +6853,14 @@ void PollingNatDns(VH *v, NAT_ENTRY *n)
 		if (n->DnsPollingFlag == false)
 		{
 			n->DnsPollingFlag = true;
+
+			// DNS-driven split (phase 2): forward-answer queries for names
+			// matching the hub's domain rules feed the dynamic range set.
+			if (n->DnsGetIpFromHost && IsZeroIP(&n->DnsResponseIp) == false)
+			{
+				IkeV2DnsFeed((v->nat != NULL ? v->nat->Option.HubName : NULL), n->DnsTargetHostName, &n->DnsResponseIp);
+			}
+
 			// Process has been completed
 			SendNatDnsResponse(v, n);
 
@@ -6952,6 +6963,19 @@ void DnsProxy(VH *v, UINT src_ip, UINT src_port, UINT dest_ip, UINT dest_port, v
 	}
 	else
 	{
+		// DNS-driven split: observe the queried name before forwarding so
+		// matching domain rules can schedule a dynamic-range resolution.
+		{
+			DNS_PARSED_PACKET p;
+			Zero(&p, sizeof(p));
+			if (ParseDnsPacketEx(v, src_ip, src_port, dest_ip, dest_port, data, size, &p))
+			{
+				MsTrace("DnsProxy hook: v=%p nat=%p name=[%s]",
+					v, v->nat, v->nat != NULL ? v->nat->Option.HubName : "-");
+				IkeV2DnsQueryFeed((v->nat != NULL ? v->nat->Option.HubName : NULL), p.Hostname);
+			}
+		}
+
 		// Forward the packet as it is in the case of a normal DNS packet
 		if (IsEmptyStr(v_vgs_hostname) == false)
 		{

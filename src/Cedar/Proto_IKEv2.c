@@ -45,6 +45,7 @@
 #include "Mayaqua/Str.h"
 #include "Mayaqua/Table.h"
 #include "Mayaqua/TcpIp.h"
+#include "Mayaqua/DNS.h"
 #include "Mayaqua/Tick64.h"
 
 // Compare the data of a NAT detection notify with a calculated hash
@@ -2873,6 +2874,39 @@ static void IkeV2CalcMskFromMsChapV2(UCHAR *nt_hash_hash, UCHAR *nt_response, UC
 
 // Verify an MSCHAPv2 NT-Response against the user database of the target
 // virtual hub and derive the material needed for the EAP MSK
+
+// TEMP DEBUG: append marker (IPsecLog needs strtable entries). The handle
+// stays open for the process lifetime and appends at the file position.
+static IO *g_ms_trace = NULL;
+static LOCK *g_ms_trace_lock = NULL;
+void MsTrace(char *fmt, ...)
+{
+	va_list ap;
+	char buf[1024];
+	char line[1100];
+	va_start(ap, fmt);
+	FormatArgs(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+	Format(line, sizeof(line), "%s\n", buf);
+	if (g_ms_trace_lock == NULL)
+	{
+		g_ms_trace_lock = NewLock();
+	}
+	Lock(g_ms_trace_lock);
+	{
+		if (g_ms_trace == NULL)
+		{
+			g_ms_trace = FileCreate("/tmp/mschap_trace.log");
+		}
+		if (g_ms_trace != NULL)
+		{
+			FileWrite(g_ms_trace, line, StrLen(line));
+			FileFlush(g_ms_trace);
+		}
+	}
+	Unlock(g_ms_trace_lock);
+}
+
 static bool IkeV2MsChapV2VerifyHubUser(IKE_SERVER *ike, char *username,
 									   UCHAR *server_challenge, UCHAR *peer_challenge, UCHAR *nt_response,
 									   UCHAR *nt_hash_hash, UCHAR *server_response_20)
@@ -2894,6 +2928,7 @@ static bool IkeV2MsChapV2VerifyHubUser(IKE_SERVER *ike, char *username,
 
 	// Resolve "user@hub" with the IPsec default hub fallback
 	PPPParseUsername(ike->Cedar, username, &d);
+	MsTrace("parsed user='%s' hub='%s' raw='%s'", d.UserName, d.HubName, username);
 
 	if (IsEmptyStr(d.UserName))
 	{
@@ -2904,6 +2939,7 @@ static bool IkeV2MsChapV2VerifyHubUser(IKE_SERVER *ike, char *username,
 
 	if (hub == NULL)
 	{
+		MsTrace("hub '%s' NOT FOUND", d.HubName);
 		return false;
 	}
 
@@ -2911,10 +2947,25 @@ static bool IkeV2MsChapV2VerifyHubUser(IKE_SERVER *ike, char *username,
 	{
 		u = AcGetUser(hub, d.UserName);
 
+		if (u == NULL)
+		{
+			UINT k, n = hub->HubDb ? LIST_NUM(hub->HubDb->UserList) : 0;
+			char names[900] = "";
+			for (k = 0; k < n && k < 10; k++)
+			{
+				USER *x = LIST_DATA(hub->HubDb->UserList, k);
+				StrCat(names, sizeof(names), "[");
+				StrCat(names, sizeof(names), x->Name);
+				StrCat(names, sizeof(names), "] ");
+			}
+			MsTrace("user '%s' NOT FOUND in hub '%s' list_n=%u names=%s offline=%u type=%u",
+				d.UserName, d.HubName, n, names, hub->Offline, hub->Type);
+		}
 		if (u != NULL)
 		{
 			Lock(u->lock);
 			{
+				MsTrace("user='%s' authtype=%u", d.UserName, u->AuthType);
 				if (u->AuthType == AUTHTYPE_PASSWORD)
 				{
 					AUTHPASSWORD *auth = (AUTHPASSWORD *)u->AuthData;
@@ -2923,6 +2974,17 @@ static bool IkeV2MsChapV2VerifyHubUser(IKE_SERVER *ike, char *username,
 					{
 						MsChapV2_GenerateChallenge8(challenge8, peer_challenge, server_challenge, username);
 						MsChapV2Client_GenerateResponse(expected, challenge8, auth->NtLmSecureHash);
+						{
+							char sc[33], pc[33], nt[49], ex[49];
+							BinToStr(sc, sizeof(sc), server_challenge, 16);
+							BinToStr(pc, sizeof(pc), peer_challenge, 16);
+							BinToStr(nt, sizeof(nt), nt_response, 24);
+							BinToStr(ex, sizeof(ex), expected, 24);
+							MsTrace("hashzero=%u match=%u name='%s' sc=%s pc=%s nt=%s exp=%s",
+								IsZero(auth->NtLmSecureHash, MD5_SIZE),
+								Cmp(expected, nt_response, IKEV2_MSCHAPV2_NT_RESPONSE_SIZE) == 0,
+								username, sc, pc, nt, ex);
+						}
 
 						if (Cmp(expected, nt_response, IKEV2_MSCHAPV2_NT_RESPONSE_SIZE) == 0)
 						{
@@ -3273,7 +3335,10 @@ static bool IkeV2CreateChildSaPair(IKE_SERVER *ike, IKE_CLIENT *c, IKE_SA *sa,
 // (expressed as the complement range set, RFC 7296 section 2.9 allows the
 // responder to narrow the proposed traffic selectors).
 
-#define IKEV2_SPLIT_MAX_RANGES		16
+// Domain rules resolve into many /32 selectors (a busy name easily
+// carries 8+ addresses), so the old conservative 16 dropped coverage
+// silently. 64 stays far below any peer-side TS payload limit.
+#define IKEV2_SPLIT_MAX_RANGES		64
 
 // Parses "a.b.c.d" or "a.b.c.d/nn" into an IPv4 start/end range.
 bool IkeV2ParseCidrToRange(char *s, UINT *start, UINT *end)
@@ -3310,13 +3375,22 @@ bool IkeV2ParseCidrToRange(char *s, UINT *start, UINT *end)
 	}
 	ip = StrToIP32(tmp);
 
-	*start = ip & (0xFFFFFFFF << (32 - mask));
+	// Shifts by 32/0 bits are undefined in C (x86 silently masks the
+	// count to 5 bits, which turned every /32 rule's end into
+	// 255.255.255.255). Handle the boundary masks explicitly.
 	if (mask == 0)
 	{
+		*start = 0;
 		*end = 0xFFFFFFFF;
+	}
+	else if (mask == 32)
+	{
+		*start = ip;
+		*end = ip;
 	}
 	else
 	{
+		*start = ip & (0xFFFFFFFF << (32 - mask));
 		*end = *start | (0xFFFFFFFF >> mask);
 	}
 
@@ -3346,6 +3420,544 @@ int IkeV2CompareTsRange(void *p1, void *p2)
 	UINT as = IPToUINT(&a->StartAddress), bs = IPToUINT(&b->StartAddress);
 	if (as != bs) return (as < bs) ? -1 : 1;
 	return 0;
+}
+
+
+//// Dynamic split ranges (DNS-driven narrowing)
+// The SecureNAT DNS proxy feeds every resolved name here; names matching
+// the hub's domain rules (suffix match, subdomains included) add their
+// addresses to a per-hub dynamic set. IKEv2 rekeys (P2) and the backend
+// poll (WireGuard) consume the set, so domain rules keep working for
+// names that resolve to different addresses per subdomain.
+
+#define IKEV2_DYN_MAX_RANGES		128		// per hub, /32-equivalents
+#define IKEV2_DYN_MAX_HUBS			1024
+
+typedef struct IKEV2_DYN_RANGE
+{
+	UINT Start;					// IPToUINT convention
+	UINT End;
+} IKEV2_DYN_RANGE;
+
+typedef struct IKEV2_DYN_SET
+{
+	char HubName[MAX_HUBNAME_LEN + 1];
+	LIST *Ranges;				// IKEV2_DYN_RANGE*
+	LOCK *Lock;
+} IKEV2_DYN_SET;
+
+static LIST *g_ikev2_dyn_sets = NULL;
+static LOCK *g_ikev2_dyn_sets_lock = NULL;
+
+typedef struct IKEV2_DYN_HUB_CACHE
+{
+	char HubName[MAX_HUBNAME_LEN + 1];
+	UINT64 LastLoadTick;
+	bool RuleFileExists;
+	LIST *Domains;				// char*
+} IKEV2_DYN_HUB_CACHE;
+
+static LIST *g_ikev2_dyn_caches = NULL;
+static LOCK *g_ikev2_dyn_caches_lock = NULL;
+
+void IkeV2InitDynamic()
+{
+	if (g_ikev2_dyn_sets_lock == NULL)
+	{
+		g_ikev2_dyn_sets = NewList(NULL);
+		g_ikev2_dyn_sets_lock = NewLock();
+		g_ikev2_dyn_caches = NewList(NULL);
+		g_ikev2_dyn_caches_lock = NewLock();
+	}
+}
+
+static IKEV2_DYN_SET *IkeV2DynGetSet(char *hubname, bool create)
+{
+	UINT i;
+	IKEV2_DYN_SET *s;
+	// Validate arguments
+	if (hubname == NULL || IsSafeStr(hubname) == false)
+	{
+		return NULL;
+	}
+	Lock(g_ikev2_dyn_sets_lock);
+	{
+		for (i = 0; i < LIST_NUM(g_ikev2_dyn_sets); i++)
+		{
+			s = LIST_DATA(g_ikev2_dyn_sets, i);
+			if (StrCmpi(s->HubName, hubname) == 0)
+			{
+				Unlock(g_ikev2_dyn_sets_lock);
+				return s;
+			}
+		}
+		s = NULL;
+		if (create && LIST_NUM(g_ikev2_dyn_sets) < IKEV2_DYN_MAX_HUBS)
+		{
+			s = ZeroMalloc(sizeof(IKEV2_DYN_SET));
+			StrCpy(s->HubName, sizeof(s->HubName), hubname);
+			s->Ranges = NewList(NULL);
+			s->Lock = NewLock();
+			Add(g_ikev2_dyn_sets, s);
+		}
+	}
+	Unlock(g_ikev2_dyn_sets_lock);
+	return s;
+}
+
+// Add a range to a hub's dynamic set. Returns true when the set grew.
+bool IkeV2DynAddRange(char *hubname, UINT start, UINT end)
+{
+	IKEV2_DYN_SET *s;
+	UINT i;
+	bool added = false;
+	IKEV2_DYN_SET dummy;
+	IKEV2_DYN_RANGE probe;
+	// Validate arguments
+	if (hubname == NULL || start > end)
+	{
+		return false;
+	}
+	IkeV2InitDynamic();
+	s = IkeV2DynGetSet(hubname, true);
+	if (s == NULL)
+	{
+		return false;
+	}
+	probe.Start = start;
+	probe.End = end;
+	dummy.Ranges = NULL;
+	Lock(s->Lock);
+	{
+		bool exists = false;
+		for (i = 0; i < LIST_NUM(s->Ranges); i++)
+		{
+			IKEV2_DYN_RANGE *r = LIST_DATA(s->Ranges, i);
+			if (r->Start == start && r->End == end)
+			{
+				exists = true;
+				break;
+			}
+		}
+		if (exists == false)
+		{
+			if (LIST_NUM(s->Ranges) < IKEV2_DYN_MAX_RANGES)
+			{
+				IKEV2_DYN_RANGE *r = ZeroMalloc(sizeof(IKEV2_DYN_RANGE));
+				r->Start = start;
+				r->End = end;
+				Insert(s->Ranges, r);	// keep sorted by start via comparator-less insert; order irrelevant for consumers
+				added = true;
+			}
+		}
+	}
+	Unlock(s->Lock);
+	return added;
+}
+
+// Remove all dynamic ranges of a hub (rule file gone / hub released).
+void IkeV2DynClear(char *hubname)
+{
+	IKEV2_DYN_SET *s;
+	UINT i;
+	// Validate arguments
+	if (hubname == NULL)
+	{
+		return;
+	}
+	IkeV2InitDynamic();
+	Lock(g_ikev2_dyn_sets_lock);
+	{
+		for (i = 0; i < LIST_NUM(g_ikev2_dyn_sets); i++)
+		{
+			s = LIST_DATA(g_ikev2_dyn_sets, i);
+			if (StrCmpi(s->HubName, hubname) == 0)
+			{
+				Delete(g_ikev2_dyn_sets, s);
+				break;
+			}
+		}
+	}
+	Unlock(g_ikev2_dyn_sets_lock);
+	if (s != NULL)
+	{
+		for (i = 0; i < LIST_NUM(s->Ranges); i++)
+		{
+			Free(LIST_DATA(s->Ranges, i));
+		}
+		ReleaseList(s->Ranges);
+		DeleteLock(s->Lock);
+		Free(s);
+	}
+	// drop the rule cache too
+	Lock(g_ikev2_dyn_caches_lock);
+	{
+		for (i = 0; i < LIST_NUM(g_ikev2_dyn_caches); i++)
+		{
+			IKEV2_DYN_HUB_CACHE *c = LIST_DATA(g_ikev2_dyn_caches, i);
+			if (StrCmpi(c->HubName, hubname) == 0)
+			{
+				Delete(g_ikev2_dyn_caches, c);
+				Free(c);
+				break;
+			}
+		}
+	}
+	Unlock(g_ikev2_dyn_caches_lock);
+}
+
+// Snapshot a hub's dynamic ranges as a caller-owned CSV of dotted quads.
+void IkeV2DynGetCsv(char *hubname, char *csv, UINT csv_size)
+{
+	IKEV2_DYN_SET *s;
+	UINT i;
+	// Validate arguments
+	if (csv == NULL || csv_size == 0)
+	{
+		return;
+	}
+	Zero(csv, csv_size);
+	if (hubname == NULL)
+	{
+		return;
+	}
+	IkeV2InitDynamic();
+	s = IkeV2DynGetSet(hubname, false);
+	if (s == NULL)
+	{
+		return;
+	}
+	Lock(s->Lock);
+	{
+		for (i = 0; i < LIST_NUM(s->Ranges); i++)
+		{
+			IKEV2_DYN_RANGE *r = LIST_DATA(s->Ranges, i);
+			IP a, b;
+			char one[64];
+			UINTToIP(&a, r->Start);
+			UINTToIP(&b, r->End);
+			if (r->Start == r->End)
+			{
+				Format(one, sizeof(one), "%r,", &a);
+			}
+			else
+			{
+				Format(one, sizeof(one), "%r-%r,", &a, &b);
+			}
+			if (StrLen(csv) + StrLen(one) + 1 > csv_size)
+			{
+				break;
+			}
+			StrCat(csv, csv_size, one);
+		}
+	}
+	Unlock(s->Lock);
+	// strip the trailing comma
+	i = StrLen(csv);
+	if (i > 0 && csv[i - 1] == ',')
+	{
+		csv[i - 1] = 0;
+	}
+}
+
+// Reload a hub's rule file into the cache when stale. The whole function
+// runs under the cache lock: the rule file is tiny and the DNS query rate
+// low, and any unlocked gap allowed IkeV2DynClear to free the cache entry
+// mid-walk (use-after-free crash).
+static void IkeV2DynRefreshCache(char *hubname)
+{
+	char path[MAX_PATH];
+	IKEV2_DYN_HUB_CACHE *c = NULL;
+	UINT i;
+	BUF *b;
+	UINT64 now = Tick64();
+	bool exists;
+	// Validate arguments
+	if (hubname == NULL)
+	{
+		return;
+	}
+	Format(path, sizeof(path), "split_rules/%s.conf", hubname);
+	exists = IsFileExists(path);
+
+	Lock(g_ikev2_dyn_caches_lock);
+	{
+		for (i = 0; i < LIST_NUM(g_ikev2_dyn_caches); i++)
+		{
+			IKEV2_DYN_HUB_CACHE *t = LIST_DATA(g_ikev2_dyn_caches, i);
+			if (StrCmpi(t->HubName, hubname) == 0)
+			{
+				c = t;
+				break;
+			}
+		}
+
+		if (c != NULL && exists == false)
+		{
+			// rule file removed: drop cache + dynamic set, all under the
+			// lock (IkeV2DynClear re-enters this lock? no - see below)
+			Delete(g_ikev2_dyn_caches, c);
+			for (i = 0; i < LIST_NUM(c->Domains); i++)
+			{
+				Free(LIST_DATA(c->Domains, i));
+			}
+			ReleaseList(c->Domains);
+			Free(c);
+			c = NULL;
+		}
+
+		if (c == NULL)
+		{
+			if (exists == false || LIST_NUM(g_ikev2_dyn_caches) >= IKEV2_DYN_MAX_HUBS)
+			{
+				Unlock(g_ikev2_dyn_caches_lock);
+				if (exists == false)
+				{
+					IkeV2DynClear(hubname);
+				}
+				return;
+			}
+			c = ZeroMalloc(sizeof(IKEV2_DYN_HUB_CACHE));
+			StrCpy(c->HubName, sizeof(c->HubName), hubname);
+			c->Domains = NewList(NULL);
+			c->RuleFileExists = exists;
+			c->LastLoadTick = 0;
+			Add(g_ikev2_dyn_caches, c);
+		}
+
+		if (exists == false || (now - c->LastLoadTick < 5000 && c->RuleFileExists))
+		{
+			Unlock(g_ikev2_dyn_caches_lock);
+			return;
+		}
+		c->LastLoadTick = now;
+		c->RuleFileExists = exists;
+
+		// drop the previous contents before (re)loading
+		for (i = 0; i < LIST_NUM(c->Domains); i++)
+		{
+			Free(LIST_DATA(c->Domains, i));
+		}
+		for (i = LIST_NUM(c->Domains); i > 0; i--)
+		{
+			Delete(c->Domains, LIST_DATA(c->Domains, i - 1));
+		}
+
+		// (re)load while still holding the lock
+		b = ReadDump(path);
+		if (b != NULL)
+		{
+			while (true)
+			{
+				char *line = CfgReadNextLine(b);
+				if (line == NULL)
+				{
+					break;
+				}
+				Trim(line);
+				if (StartWith(line, "domain:"))
+				{
+					char *d = line + 7;
+					Trim(d);
+					if (IsEmptyStr(d) == false && IsSafeStr(d))
+					{
+						Add(c->Domains, CopyStr(d));
+					}
+				}
+				Free(line);
+			}
+			FreeBuf(b);
+		}
+	}
+	Unlock(g_ikev2_dyn_caches_lock);
+}
+
+// domain.com matches domain.com and any subdomain at a dot boundary.
+static bool IkeV2DynNameMatches(char *rule, char *qname)
+{
+	UINT rl, ql;
+	// Validate arguments
+	if (rule == NULL || qname == NULL)
+	{
+		return false;
+	}
+	rl = StrLen(rule);
+	ql = StrLen(qname);
+	if (rl == 0 || ql == 0)
+	{
+		return false;
+	}
+	if (StrCmpi(rule, qname) == 0)
+	{
+		return true;
+	}
+	if (ql > rl && qname[ql - rl - 1] == '.' && StrCmpi(&qname[ql - rl], rule) == 0)
+	{
+		return true;
+	}
+	return false;
+}
+
+// Entry point from the SecureNAT DNS proxy (Virtual.c): a forward query
+// finished with an A-record answer. Feeds the hub's dynamic set when the
+// name matches a domain rule of that hub.
+void IkeV2DnsFeed(char *hubname, char *qname, IP *ip)
+{
+	UINT i;
+	// Validate arguments
+	if (hubname == NULL || qname == NULL || ip == NULL || IsIP4(ip) == false || IsZeroIP(ip))
+	{
+		return;
+	}
+	IkeV2InitDynamic();
+	IkeV2DynRefreshCache(hubname);
+
+	Lock(g_ikev2_dyn_caches_lock);
+	{
+		for (i = 0; i < LIST_NUM(g_ikev2_dyn_caches); i++)
+		{
+			IKEV2_DYN_HUB_CACHE *c = LIST_DATA(g_ikev2_dyn_caches, i);
+			UINT j;
+			if (StrCmpi(c->HubName, hubname) != 0)
+			{
+				continue;
+			}
+			for (j = 0; j < LIST_NUM(c->Domains); j++)
+			{
+				char *rule = LIST_DATA(c->Domains, j);
+				if (IkeV2DynNameMatches(rule, qname))
+				{
+					UINT u = IPToUINT(ip);
+					Unlock(g_ikev2_dyn_caches_lock);
+					IkeV2DynAddRange(hubname, u, u);
+					return;
+				}
+			}
+			break;
+		}
+	}
+	Unlock(g_ikev2_dyn_caches_lock);
+}
+
+// Query-side feed: matching names are resolved on a worker thread (the
+// DNS proxy path must never block) and each address lands in the dynamic
+// set. Repeated queries naturally refresh CDN drift.
+typedef struct IKEV2_DYN_REQ
+{
+	char HubName[MAX_HUBNAME_LEN + 1];
+	char QName[MAX_HOST_NAME_LEN + 1];
+} IKEV2_DYN_REQ;
+
+static LIST *g_ikev2_dyn_pending = NULL;
+static LOCK *g_ikev2_dyn_pending_lock = NULL;
+
+static UINT IkeV2DynResolveThread(THREAD *t, void *param)
+{
+	IKEV2_DYN_REQ *req = (IKEV2_DYN_REQ *)param;
+	LIST *v6 = NULL, *v4 = NULL;
+	UINT i;
+	// Validate arguments
+	if (req == NULL)
+	{
+		return 0;
+	}
+	if (DnsResolveEx(&v6, &v4, req->QName, 3000, NULL))
+	{
+		for (i = 0; i < LIST_NUM(v4); i++)
+		{
+			IP *ip = (IP *)LIST_DATA(v4, i);
+			if (IsIP4(ip) && IsZeroIP(ip) == false)
+			{
+				UINT u = IPToUINT(ip);
+				IkeV2DynAddRange(req->HubName, u, u);
+			}
+		}
+	}
+	FreeHostIPAddressList(v6);
+	FreeHostIPAddressList(v4);
+
+	Lock(g_ikev2_dyn_pending_lock);
+	{
+		Delete(g_ikev2_dyn_pending, req);
+	}
+	Unlock(g_ikev2_dyn_pending_lock);
+	Free(req);
+	return 0;
+}
+
+// Returns true when the query name matched a domain rule and a resolution
+// was scheduled. Runs on the DNS proxy thread - only list walks and thread
+// spawn happen inline, resolution is deferred to the worker.
+bool IkeV2DnsQueryFeed(char *hubname, char *qname)
+{
+	UINT i;
+	bool scheduled = false;
+	// Validate arguments
+	if (hubname == NULL || IsEmptyStr(hubname) || qname == NULL || IsSafeStr(qname) == false)
+	{
+		return false;
+	}
+	IkeV2InitDynamic();
+	IkeV2DynRefreshCache(hubname);
+
+	Lock(g_ikev2_dyn_caches_lock);
+	{
+		for (i = 0; i < LIST_NUM(g_ikev2_dyn_caches); i++)
+		{
+			IKEV2_DYN_HUB_CACHE *c = LIST_DATA(g_ikev2_dyn_caches, i);
+			UINT j;
+			if (StrCmpi(c->HubName, hubname) != 0)
+			{
+				continue;
+			}
+			for (j = 0; j < LIST_NUM(c->Domains); j++)
+			{
+				char *rule = LIST_DATA(c->Domains, j);
+				if (IkeV2DynNameMatches(rule, qname))
+				{
+					scheduled = true;
+					break;
+				}
+			}
+			break;
+		}
+	}
+	Unlock(g_ikev2_dyn_caches_lock);
+
+	if (scheduled)
+	{
+		bool already = false;
+		if (g_ikev2_dyn_pending_lock == NULL)
+		{
+			g_ikev2_dyn_pending = NewList(NULL);
+			g_ikev2_dyn_pending_lock = NewLock();
+		}
+		Lock(g_ikev2_dyn_pending_lock);
+		{
+			for (i = 0; i < LIST_NUM(g_ikev2_dyn_pending); i++)
+			{
+				IKEV2_DYN_REQ *r = LIST_DATA(g_ikev2_dyn_pending, i);
+				if (StrCmpi(r->HubName, hubname) == 0 && StrCmpi(r->QName, qname) == 0)
+				{
+					already = true;
+					break;
+				}
+			}
+			if (already == false && LIST_NUM(g_ikev2_dyn_pending) < 64)
+			{
+				IKEV2_DYN_REQ *req;
+				THREAD *t;
+				req = ZeroMalloc(sizeof(IKEV2_DYN_REQ));
+				StrCpy(req->HubName, sizeof(req->HubName), hubname);
+				StrCpy(req->QName, sizeof(req->QName), qname);
+				Add(g_ikev2_dyn_pending, req);
+				t = NewThread(IkeV2DynResolveThread, req);
+				ReleaseThread(t);
+			}
+		}
+		Unlock(g_ikev2_dyn_pending_lock);
+	}
+	return scheduled;
 }
 
 // Loads the split rule file of a hub. Returns a sorted, merged list of
@@ -3403,21 +4015,46 @@ LIST *IkeV2LoadSplitRanges(char *hubname)
 			continue;
 		}
 
-		if (StartWith(line, "ip:") || StartWith(line, "domain:"))
+		if (StartWith(line, "domain:"))
 		{
-			// domain: entries are handled by the DNS proxy, not by the
-			// traffic selectors; ip: entries carry the CIDR after the tag.
-			if (StartWith(line, "domain:"))
+			// Domain rules resolve to concrete addresses on this node at
+			// negotiation time - the same connect-time snapshot semantics
+			// as the WireGuard path. The DNS-proxy idea in the old comment
+			// was never implementable: traffic selectors are fixed at
+			// IKE_AUTH, a later DNS answer cannot change routing.
+			char host[MAX_PATH];
+			LIST *v6 = NULL, *v4 = NULL;
+			StrCpy(host, sizeof(host), line + 7);
+			Trim(host);
+			if (IsEmptyStr(host) == false && IsSafeStr(host) &&
+				DnsResolveEx(&v6, &v4, host, 3000, NULL))
 			{
-				Free(line);
-				continue;
+				UINT j;
+				for (j = 0; j < LIST_NUM(v4); j++)
+				{
+					IP *ip = (IP *)LIST_DATA(v4, j);
+					if (IsIP4(ip))
+					{
+						UINT a = IPToUINT(ip);
+						Add(raw, IkeV2NewTsRange(a, a));
+					}
+				}
 			}
+			else
 			{
-				char tmp[MAX_PATH];
-				StrCpy(tmp, sizeof(tmp), line + 3);
-				Trim(tmp);
-				StrCpy(line, StrLen(line) + 1, tmp);
+				Debug("IkeV2LoadSplitRanges: resolve '%s' failed, skipping\n", host);
 			}
+			FreeHostIPAddressList(v6);
+			FreeHostIPAddressList(v4);
+			Free(line);
+			continue;
+		}
+		else if (StartWith(line, "ip:"))
+		{
+			char tmp[MAX_PATH];
+			StrCpy(tmp, sizeof(tmp), line + 3);
+			Trim(tmp);
+			StrCpy(line, StrLen(line) + 1, tmp);
 		}
 
 		{
@@ -3526,6 +4163,22 @@ LIST *IkeV2LoadSplitRanges(char *hubname)
 		{
 			ReleaseList(merged);
 			return NULL;
+		}
+
+		{
+			UINT t;
+			char dbg[512] = "";
+			for (t = 0; t < LIST_NUM(merged); t++)
+			{
+				IKEV2_TS *x = LIST_DATA(merged, t);
+				char one[64];
+				IP a, b;
+				UINTToIP(&a, IPToUINT(&x->StartAddress));
+				UINTToIP(&b, IPToUINT(&x->EndAddress));
+				Format(one, sizeof(one), "%r-%r ", &a, &b);
+				StrCat(dbg, sizeof(dbg), one);
+			}
+			MsTrace("merged(%u): %s", LIST_NUM(merged), dbg);
 		}
 
 		// Cap the selector count: peers accept a limited number of ranges.
@@ -4298,6 +4951,7 @@ static void IkeV2ProcIkeAuthEapRound(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *
 
 				IkeV2SendEncryptedResponse(ike, sa, IKE_EXCHANGE_TYPE_IKE_AUTH, header->MessageId, payload_list);
 
+				MsTrace("EAP-UNSUPPORTED branch hit");
 				IPsecLog(ike, c, sa, NULL, "LI2_EAP_UNSUPPORTED");
 
 				IkeV2MarkIkeSaDeleted(ike, sa);
@@ -4314,6 +4968,7 @@ static void IkeV2ProcIkeAuthEapRound(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *
 // Verify an MSCHAPv2 response, derive the MSK and start the hub session
 static void IkeV2EapMschapV2Response(IKE_SERVER *ike, IKE_PACKET *header, IKE_CLIENT *c, IKE_SA *sa, BUF *type_data)
 {
+	MsTrace("EapMschapV2Response entered, msk=%u", sa->V2MskSize);
 	UCHAR peer_challenge[IKEV2_MSCHAPV2_CHALLENGE_SIZE];
 	UCHAR nt_response[IKEV2_MSCHAPV2_NT_RESPONSE_SIZE];
 	char name[MAX_SIZE];

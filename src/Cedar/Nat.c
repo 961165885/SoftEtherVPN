@@ -6,6 +6,7 @@
 // User-mode Router
 
 #include "Nat.h"
+#include "Proto_IKEv2.h"
 
 #include "Admin.h"
 #include "Remote.h"
@@ -1713,8 +1714,13 @@ NAT *NiNewNatEx(SNAT *snat, VH_OPTION *o)
 	// Raise the priority
 	//OSSetHighPriority();
 
-	// Initialize the settings
+	// Initialize the settings (NiInitConfig resets n->Option to defaults)
 	NiInitConfig(n);
+
+	// Keep the caller's option on the NAT object itself: the DNS-driven
+	// split hook reads nat->Option.HubName from the packet path.
+	Copy(&n->Option, o, sizeof(VH_OPTION));
+	MsTrace("NiNewNatEx n=%p opt=[%s]", n, n->Option.HubName);
 
 #if	0
 	// Start the operation of the virtual host
@@ -1728,7 +1734,7 @@ NAT *NiNewNatEx(SNAT *snat, VH_OPTION *o)
 		n->Virtual = NULL;
 	}
 #else
-	n->Virtual = NewVirtualHostEx(n->Cedar, NULL, NULL, o, n);
+	n->Virtual = NewVirtualHostEx(n->Cedar, NULL, NULL, &n->Option, n);
 	n->Online = true;
 #endif
 

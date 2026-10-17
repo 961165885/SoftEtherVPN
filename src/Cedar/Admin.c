@@ -6,6 +6,8 @@
 // RPC Module for Management
 
 #include "Admin.h"
+#include "Proto_IKEv2.h"
+
 
 #include "Account.h"
 #include "AzureClient.h"
@@ -41,6 +43,7 @@
 #include "Mayaqua/Str.h"
 #include "Mayaqua/Table.h"
 #include "Mayaqua/Tick64.h"
+
 
 // Macro for RPC function declaration
 #define	DECLARE_RPC_EX(rpc_name, data_type, function, in_rpc, out_rpc, free_rpc)		\
@@ -1487,9 +1490,87 @@ PACK *AdminDispatch(RPC *rpc, char *name, PACK *p)
 		SiDebugLog(a->Server, tmp);
 	}
 
+
+
+// Dynamic split ranges of a hub (DNS-driven narrowing observability and
+// the WireGuard update channel).
+typedef struct RPC_ENUM_DYNAMIC
+{
+	char HubName[MAX_HUBNAME_LEN + 1];
+	char IpsCsv[5120];			// comma-separated dotted quads / ranges
+	UINT NumRanges;
+} RPC_ENUM_DYNAMIC;
+
+void InRpcEnumDynamic(RPC_ENUM_DYNAMIC *t, PACK *p)
+{
+	// Validate arguments
+	if (t == NULL || p == NULL)
+	{
+		return;
+	}
+	Zero(t, sizeof(RPC_ENUM_DYNAMIC));
+	PackGetStr(p, "HubName", t->HubName, sizeof(t->HubName));
+}
+void OutRpcEnumDynamic(PACK *p, RPC_ENUM_DYNAMIC *t)
+{
+	// Validate arguments
+	if (t == NULL || p == NULL)
+	{
+		return;
+	}
+	PackAddStr(p, "HubName", t->HubName);
+	PackAddStr(p, "IpsCsv", t->IpsCsv);
+	PackAddInt(p, "NumRanges", t->NumRanges);
+}
+UINT StEnumDynamicRanges(ADMIN *a, RPC_ENUM_DYNAMIC *t)
+{
+	HUB *h;
+	UINT i;
+	MsTrace("StEnumDynamicRanges hub=[%s] serveradmin=%u", t->HubName, a->ServerAdmin);
+		// Validate arguments
+	if (t == NULL)
+	{
+		return ERR_INTERNAL_ERROR;
+	}
+	if (a->ServerAdmin == false)
+	{
+		return ERR_NOT_ENOUGH_RIGHT;
+	}
+	if (IsEmptyStr(t->HubName) || IsSafeStr(t->HubName) == false)
+	{
+		return ERR_INVALID_PARAMETER;
+	}
+	LockHubList(a->Server->Cedar);
+	{
+		h = GetHub(a->Server->Cedar, t->HubName);
+	}
+	UnlockHubList(a->Server->Cedar);
+	if (h == NULL)
+	{
+		return ERR_HUB_NOT_FOUND;
+	}
+	ReleaseHub(h);
+
+	IkeV2DynGetCsv(t->HubName, t->IpsCsv, sizeof(t->IpsCsv));
+	t->NumRanges = 0;
+	for (i = 0; t->IpsCsv[i] != 0; i++)
+	{
+		if (t->IpsCsv[i] == ',')
+		{
+			t->NumRanges++;
+		}
+	}
+	if (t->IpsCsv[0] != 0)
+	{
+		t->NumRanges++;
+	}
+	return ERR_NO_ERROR;
+}
+
 	if (0) {}
 
 	// RPC function declaration: from here
+
 	DECLARE_RPC_EX("Test", RPC_TEST, StTest, InRpcTest, OutRpcTest, FreeRpcTest)
 	DECLARE_RPC_EX("GetServerInfo", RPC_SERVER_INFO, StGetServerInfo, InRpcServerInfo, OutRpcServerInfo, FreeRpcServerInfo)
 	DECLARE_RPC("GetServerStatus", RPC_SERVER_STATUS, StGetServerStatus, InRpcServerStatus, OutRpcServerStatus)
@@ -1572,6 +1653,8 @@ PACK *AdminDispatch(RPC *rpc, char *name, PACK *p)
 	DECLARE_RPC_EX("EnumNAT", RPC_ENUM_NAT, StEnumNAT, InRpcEnumNat, OutRpcEnumNat, FreeRpcEnumNat)
 	DECLARE_RPC_EX("EnumDHCP", RPC_ENUM_DHCP, StEnumDHCP, InRpcEnumDhcp, OutRpcEnumDhcp, FreeRpcEnumDhcp)
 	DECLARE_RPC("GetSecureNATStatus", RPC_NAT_STATUS, StGetSecureNATStatus, InRpcNatStatus, OutRpcNatStatus)
+	DECLARE_RPC("EnumDynamicRanges", RPC_ENUM_DYNAMIC, StEnumDynamicRanges, InRpcEnumDynamic, OutRpcEnumDynamic)
+
 	DECLARE_RPC_EX("EnumEthernet", RPC_ENUM_ETH, StEnumEthernet, InRpcEnumEth, OutRpcEnumEth, FreeRpcEnumEth)
 	DECLARE_RPC("AddLocalBridge", RPC_LOCALBRIDGE, StAddLocalBridge, InRpcLocalBridge, OutRpcLocalBridge)
 	DECLARE_RPC("DeleteLocalBridge", RPC_LOCALBRIDGE, StDeleteLocalBridge, InRpcLocalBridge, OutRpcLocalBridge)
@@ -15701,4 +15784,3 @@ bool SiIsEmptyPassword(void *hash_password)
 
 	return false;
 }
-
