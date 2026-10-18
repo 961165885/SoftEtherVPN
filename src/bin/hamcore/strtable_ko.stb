@@ -7434,3 +7434,6 @@ LI2_IPC_CONNECTED	가상 허브로의 IKEv2 IPC 세션이 설정되었습니다.
 LI2_IPC_FAILED	가상 허브로의 IKEv2 IPC 세션을 설정할 수 없습니다. 사용자 이름: %S
 LI2_IPC_DISCONNECTED	이 클라이언트의 IKEv2 IPC 세션이 연결 해제되었습니다.
 LI2_SPLIT_APPLIED	IKEv2 분할 터널링 트래픽 셀렉터가 적용되었습니다 (모드: %S, %u개 범위)
+LI2_CHILD_REKEY_STARTED	IKEv2 split rekey started (dynamic ranges moved). MessageId: %u, new SPI: %u
+LI2_CHILD_SA_REKEYED	IKEv2 Child SA rekeyed. Initiator Cookie: 0x%I64X, Responder Cookie: 0x%I64X, New SPI: %u
+LI2_CHILD_REKEY_REFUSED	IKEv2 split rekey was refused or failed; will retry on the next change.

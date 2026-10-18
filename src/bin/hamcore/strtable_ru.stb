@@ -7438,3 +7438,6 @@ LI2_IPC_CONNECTED	Установлен сеанс IPC IKEv2 в виртуаль�
 LI2_IPC_FAILED	Не удалось установить сеанс IPC IKEv2 в виртуальный хаб. Имя пользователя: %S
 LI2_IPC_DISCONNECTED	Сеанс IPC IKEv2 этого клиента разорван.
 LI2_SPLIT_APPLIED	Применены селекторы трафика раздельного туннелирования IKEv2 (режим: %S, диапазонов: %u)
+LI2_CHILD_REKEY_STARTED	IKEv2 split rekey started (dynamic ranges moved). MessageId: %u, new SPI: %u
+LI2_CHILD_SA_REKEYED	IKEv2 Child SA rekeyed. Initiator Cookie: 0x%I64X, Responder Cookie: 0x%I64X, New SPI: %u
+LI2_CHILD_REKEY_REFUSED	IKEv2 split rekey was refused or failed; will retry on the next change.

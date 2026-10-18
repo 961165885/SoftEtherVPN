@@ -4303,6 +4303,7 @@ IKE_CLIENT *NewIkeClient(IKE_SERVER *ike, IP *client_ip, UINT client_port, IP *s
 	}
 
 	c = ZeroMalloc(sizeof(IKE_CLIENT));
+	c->V2ChildRekeyPendingMsgId = INFINITE;
 
 	c->Id = ++ike->CurrentIkeClientId;
 
@@ -5630,6 +5631,44 @@ void ProcessIKEInterrupts(IKE_SERVER *ike)
 
 		if (c->V2Ipc != NULL)
 		{
+			// DNS-driven split: when the hub's dynamic range set moved
+			// (a domain rule resolved), refresh the Child SA traffic
+			// selectors via a server-initiated rekey. Debounced to one
+			// attempt per 5 seconds per client; a pending attempt or a
+			// 15s-old stuck one blocks further tries until cleared.
+			if (c->CurrentIkeSa != NULL && c->CurrentIkeSa->Established && c->Deleting == false)
+			{
+				UINT64 seq = IkeV2DynGetSeq(c->V2Ipc->HubName);
+				if (seq > 0 && seq != c->V2DynSeqSeen)
+				{
+					MsTrace("DynTrigger: hub=[%s] seq=%llu seen=%llu now>=%llu tick=%llu",
+						c->V2Ipc->HubName, (UINT64)seq, c->V2DynSeqSeen,
+						(UINT64)(ike->Now >= c->V2LastDynRekeyTick + (UINT64)5000), c->V2LastDynRekeyTick);
+				}
+				if (seq > c->V2DynSeqSeen &&
+					(c->V2LastDynRekeyTick == 0 || ike->Now >= c->V2LastDynRekeyTick + (UINT64)5000))
+				{
+					bool ok = IkeV2StartChildSaRekey(ike, c);
+					MsTrace("DynRekeyAttempt: hub=[%s] seq=%llu ok=%u", c->V2Ipc->HubName, (UINT64)seq, ok);
+					if (ok)
+					{
+						c->V2DynSeqSeen = seq;
+					}
+					c->V2LastDynRekeyTick = ike->Now;
+				}
+				if (c->V2ChildRekeyPendingMsgId != INFINITE &&
+					ike->Now >= c->V2LastDynRekeyTick + (UINT64)15000)
+				{
+					// Stuck rekey: give up so future changes can retry
+					c->V2ChildRekeyPendingMsgId = INFINITE;
+					if (c->V2ChildRekeyNi != NULL)
+					{
+						FreeBuf(c->V2ChildRekeyNi);
+						c->V2ChildRekeyNi = NULL;
+					}
+				}
+			}
+
 			// IKEv2 user plane: pump the IPC virtual host and send the
 			// packets destined to the client through its outbound ESP SA
 			if (IsIPCConnected(c->V2Ipc) == false)

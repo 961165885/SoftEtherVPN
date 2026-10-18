@@ -7443,5 +7443,6 @@ SW_LINK_NAME_DEBUG						调试信息采集工具
 SW_LINK_NAME_DEBUG_COMMENT				采集 SoftEther VPN 的调试信息。仅在您的支持人员要求你这样做时使用此工具。
 LI2_FRAG_PEER_SUPPORTED	对端对 IKE 分片功能的支持: %s
 LI2_SPLIT_APPLIED	IKEv2 分流流量选择器已应用（模式: %S，%u 个网段）
-
-
+LI2_CHILD_REKEY_STARTED	IKEv2 split rekey started (dynamic ranges moved). MessageId: %u, new SPI: %u
+LI2_CHILD_SA_REKEYED	IKEv2 Child SA rekeyed. Initiator Cookie: 0x%I64X, Responder Cookie: 0x%I64X, New SPI: %u
+LI2_CHILD_REKEY_REFUSED	IKEv2 split rekey was refused or failed; will retry on the next change.

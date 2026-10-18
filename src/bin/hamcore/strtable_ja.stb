@@ -7439,3 +7439,6 @@ LI2_IPC_CONNECTED	仮想ハブへの IKEv2 IPC セッションが確立されま
 LI2_IPC_FAILED	仮想ハブへの IKEv2 IPC セッションを確立できませんでした。ユーザー名: %S
 LI2_IPC_DISCONNECTED	このクライアントの IKEv2 IPC セッションが切断されました。
 LI2_SPLIT_APPLIED	IKEv2 スプリットトンネリングのトラフィックセレクターを適用しました（モード: %S、%u 範囲）
+LI2_CHILD_REKEY_STARTED	IKEv2 split rekey started (dynamic ranges moved). MessageId: %u, new SPI: %u
+LI2_CHILD_SA_REKEYED	IKEv2 Child SA rekeyed. Initiator Cookie: 0x%I64X, Responder Cookie: 0x%I64X, New SPI: %u
+LI2_CHILD_REKEY_REFUSED	IKEv2 split rekey was refused or failed; will retry on the next change.

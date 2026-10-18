@@ -178,7 +178,20 @@ void ProcIkeV2PacketRecv(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header)
 
 	if (header->FlagV2Response)
 	{
-		// We never initiate anything in this phase: responses are ignored
+		// The only server-initiated exchange: Child SA rekeys driven by the
+		// DNS dynamic split. Route them to the response handler.
+		if (header->ExchangeType == IKE_EXCHANGE_TYPE_CREATE_CHILD_SA)
+		{
+			IKE_CLIENT *rc = SearchOrCreateNewIkeClientForIkePacket(ike, &p->SrcIP, p->SrcPort, &p->DstIP, p->DestPort, header);
+			if (rc != NULL)
+			{
+				IKE_SA *rsa2 = FindIkeSaByResponderCookieAndClient(ike, header->ResponderCookie, rc);
+				if (rsa2 != NULL && rsa2->MajorVersion == IKE_MAJOR_VERSION_2 && rsa2->Established)
+				{
+					IkeV2ProcChildRekeyResponse(ike, p, header, rc, rsa2);
+				}
+			}
+		}
 		return;
 	}
 
@@ -2361,6 +2374,333 @@ void IkeV2SendDelete(IKE_SERVER *ike, IKE_CLIENT *c)
 	FreeBuf(msg);
 }
 
+
+static bool IkeV2CreateChildSaPairEx2(IKE_SERVER *ike, IKE_CLIENT *c, IKE_SA *sa,
+									 IKE_PACKET_PAYLOAD *sa_payload, IPSEC_SA_TRANSFORM_SETTING *child_setting,
+									 UINT *our_spi, IPSECSA **sa_c_out, IPSECSA **sa_s_out,
+									 BUF *initiator_rand, BUF *responder_rand, UINT forced_spi);
+
+// Send a server-initiated encrypted request. Returns the MessageId used,
+// INFINITE on failure. The caller keeps the payloads ownership freed here.
+static UINT IkeV2SendEncryptedRequest(IKE_SERVER *ike, IKE_CLIENT *c, IKE_SA *sa,
+									  UCHAR exchange_type, LIST *payload_list)
+{
+	BUF *inner, *plain = NULL, *body = NULL, *msg = NULL;
+	UINT message_id;
+	UINT blocksize, icv_size, data_size, pad_len, i;
+	UCHAR iv[IKE_MAX_BLOCK_SIZE];
+	UCHAR icv[IKE_MAX_HASH_SIZE];
+	IKE_CRYPTO_PARAM cp;
+	UCHAR sk_header[4];
+	UINT sk_payload_size, msg_size;
+	// Validate arguments
+	if (ike == NULL || c == NULL || sa == NULL || payload_list == NULL)
+	{
+		return INFINITE;
+	}
+	if (sa->Established == false || sa->V2KeyEr == NULL || sa->TransformSetting.Crypto == NULL)
+	{
+		return INFINITE;
+	}
+
+	inner = IkeBuildPayloadList(payload_list);
+	if (inner == NULL)
+	{
+		return INFINITE;
+	}
+
+	message_id = sa->V2MsgIdSendNext++;
+
+	blocksize = sa->TransformSetting.Crypto->BlockSize;
+	icv_size = sa->TransformSetting.V2IntegIcvSize;
+
+	data_size = inner->Size;
+	pad_len = (blocksize - ((data_size + 1) % blocksize)) % blocksize;
+
+	plain = NewBuf();
+	WriteBufBuf(plain, inner);
+
+	for (i = 0; i < pad_len; i++)
+	{
+		UCHAR zero = 0;
+		WriteBuf(plain, &zero, 1);
+	}
+	{
+		UCHAR pad_len_byte = (UCHAR)pad_len;
+		WriteBuf(plain, &pad_len_byte, 1);
+	}
+
+	Rand(iv, blocksize);
+
+	Zero(&cp, sizeof(cp));
+	cp.Key = sa->V2KeyEr;
+	Copy(cp.Iv, iv, blocksize);
+
+	body = IkeEncrypt(plain->Buf, plain->Size, &cp);
+	if (body == NULL)
+	{
+		message_id = INFINITE;
+		goto cleanup;
+	}
+
+	sk_payload_size = body->Size;
+	sk_header[0] = IkeGetFirstPayloadType(payload_list);
+	sk_header[1] = 0;
+	sk_header[2] = (UCHAR)((sk_payload_size >> 8) & 0xFF);
+	sk_header[3] = (UCHAR)(sk_payload_size & 0xFF);
+
+	msg = NewBuf();
+	{
+		IKE_HEADER h;
+		UINT msg_size_total = sizeof(IKE_HEADER) + 4 + sk_payload_size + icv_size;
+
+		Zero(&h, sizeof(h));
+		h.InitiatorCookie = sa->InitiatorCookie;
+		h.ResponderCookie = sa->ResponderCookie;
+		h.ExchangeType = exchange_type;
+		h.MessageId = Endian32(message_id);
+		h.MessageSize = Endian32(msg_size_total);
+		// Responder-initiated request: response flag and initiator flag both clear
+		h.Flag = 0;
+		h.MinorVersion = 0;
+		h.MajorVersion = IKE_MAJOR_VERSION_2;
+
+		WriteBuf(msg, &h, sizeof(h));
+	}
+
+	WriteBuf(msg, sk_header, 4);
+	WriteBuf(msg, iv, blocksize);
+	WriteBufBuf(msg, body);
+
+	IkeHMac(sa->TransformSetting.Hash, icv, sa->V2SkAr, sa->TransformSetting.Hash->HashSize,
+		msg->Buf, msg->Size);
+
+	WriteBuf(msg, icv, icv_size);
+
+	IkeSendUdpPacket(ike, IKE_UDP_TYPE_ISAKMP, &c->ServerIP, c->ServerPort,
+		&c->ClientIP, c->ClientPort, Clone(msg->Buf, msg->Size), msg->Size);
+
+cleanup:
+	IkeFreePayloadList(payload_list);
+	FreeBuf(inner);
+	FreeBuf(plain);
+	FreeBuf(body);
+	FreeBuf(msg);
+
+	return message_id;
+}
+
+// Server-initiated Child SA rekey: refresh the traffic selectors to the
+// current tunnel set (static rules union the DNS-driven dynamic ranges).
+// Triggered from the IPC polling when the hub's dynamic sequence moved.
+bool IkeV2StartChildSaRekey(IKE_SERVER *ike, IKE_CLIENT *c)
+{
+	IKE_SA *sa;
+	LIST *payload_list, *current = NULL;
+	IKE_PACKET_PAYLOAD *tsi_replay = NULL;
+	BUF *ni = NULL;
+	UINT our_spi = 0, message_id;
+	UINT rekeyed_spi = 0;
+	IKE_PACKET_PAYLOAD *notify;
+	// Validate arguments
+	if (ike == NULL || c == NULL)
+	{
+		MsTrace("RekeyAbort: %s", "sa-null");
+		return false;
+	}
+
+	sa = c->CurrentIkeSa;
+	if (sa == NULL || sa->Established == false || sa->V2State != IKEV2_STATE_ESTABLISHED)
+	{
+		MsTrace("RekeyAbort: %s", "not-est");
+		return false;
+	}
+	if (c->Deleting || sa->Deleting)
+	{
+		MsTrace("RekeyAbort: %s", "deleting");
+		return false;
+	}
+	if (c->V2ChildRekeyPendingMsgId != INFINITE)
+	{
+		MsTrace("RekeyAbort: %s", "pending");
+		return false;	// one outstanding rekey at a time
+	}
+	if (c->V2Ipc == NULL || c->CurrentIpSecSaRecv == NULL || c->CurrentIpSecSaSend == NULL)
+	{
+		MsTrace("RekeyAbort: %s", "no-ipc");
+		return false;
+	}
+
+	current = IkeV2CurrentTunnelRanges(c->V2Ipc->HubName);
+	if (current == NULL)
+	{
+		MsTrace("RekeyAbort: %s", "no-current");
+		return false;	// global: nothing to narrow to
+	}
+
+	// TSi: replay the initiator address selector stored at IKE_AUTH
+	{
+		if (sa->V2TsiBody != NULL)
+		{
+			SeekBuf(sa->V2TsiBody, 0, 0);
+		}
+		IKE_PACKET_PAYLOAD *tsi = IkeParsePayload(IKEV2_PAYLOAD_TS_INITIATOR, sa->V2TsiBody);
+		MsTrace("RekeyTSi: parsed=%p list=%u", tsi, tsi ? LIST_NUM(tsi->Payload.TsV2.TsList) : 0);
+		if (tsi != NULL && LIST_NUM(tsi->Payload.TsV2.TsList) >= 1)
+		{
+			IKEV2_TS *t = ZeroMalloc(sizeof(IKEV2_TS));
+			Copy(t, LIST_DATA(tsi->Payload.TsV2.TsList, 0), sizeof(IKEV2_TS));
+			tsi_replay = IkeV2NewTsPayload(IKEV2_PAYLOAD_TS_INITIATOR, NewListSingle(t));
+		}
+		IkeFreePayload(tsi);
+	}
+	if (tsi_replay == NULL)
+	{
+		UINT k;
+		for (k = 0; k < LIST_NUM(current); k++)
+		{
+			Free(LIST_DATA(current, k));
+		}
+		ReleaseList(current);
+		MsTrace("RekeyAbort: %s", "no-tsi");
+		return false;
+	}
+
+	// The rekeyed Child SA is identified by the SPI we receive on (the
+	// client-to-server direction SA)
+	rekeyed_spi = c->CurrentIpSecSaRecv->Spi;
+
+	our_spi = GenerateNewIPsecSaSpi(ike, 0);
+
+	{
+		BUF *rnd = RandBuf(IKEV2_NONCE_SIZE);
+		ni = CloneBuf(rnd);
+		FreeBuf(rnd);
+	}
+
+	payload_list = NewListFast(NULL);
+
+	// REKEY_SA notify: protocol ESP, SPI = our inbound SPI of the old SA
+	{
+		UCHAR spi_buf[4];
+		spi_buf[0] = (UCHAR)((rekeyed_spi >> 24) & 0xFF);
+		spi_buf[1] = (UCHAR)((rekeyed_spi >> 16) & 0xFF);
+		spi_buf[2] = (UCHAR)((rekeyed_spi >> 8) & 0xFF);
+		spi_buf[3] = (UCHAR)(rekeyed_spi & 0xFF);
+		notify = IkeV2NewNotifyPayload(IKE_PROTOCOL_ID_IPSEC_ESP, IKEV2_NOTIFY_REKEY_SA,
+			spi_buf, sizeof(spi_buf), NULL, 0);
+		if (notify != NULL)
+		{
+			Add(payload_list, notify);
+		}
+	}
+
+	// SAi2: same transform family as the current Child SA, with our new SPI
+	Add(payload_list, IkeV2BuildChildSaResponseProposal(ike,
+		&c->CurrentIpSecSaSend->TransformSetting, our_spi));
+
+	Add(payload_list, IkeNewDataPayload(IKEV2_PAYLOAD_NONCE, ni->Buf, ni->Size));
+
+	Add(payload_list, tsi_replay);
+	Add(payload_list, IkeV2NewTsPayload(IKEV2_PAYLOAD_TS_RESPONDER, current));
+
+	message_id = IkeV2SendEncryptedRequest(ike, c, sa, IKE_EXCHANGE_TYPE_CREATE_CHILD_SA, payload_list);
+	if (message_id == INFINITE)
+	{
+		FreeBuf(ni);
+		MsTrace("RekeyAbort: %s", "send-fail");
+		return false;
+	}
+
+	c->V2ChildRekeyPendingMsgId = message_id;
+	c->V2ChildRekeyNi = ni;
+	c->V2ChildRekeyOurSpi = our_spi;
+
+	IPsecLog(ike, c, sa, NULL, "LI2_CHILD_REKEY_STARTED", message_id, our_spi);
+
+	return true;
+}
+
+
+// Handle the peer's answer to our server-initiated Child SA rekey: adopt
+// the new SA pair, or release the pending state on a refusal.
+void IkeV2ProcChildRekeyResponse(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, IKE_CLIENT *c, IKE_SA *sa)
+{
+	IKE_PACKET_PAYLOAD *sa_payload, *nonce_payload;
+	IPSEC_SA_TRANSFORM_SETTING child_setting;
+	UINT our_spi = 0;
+	IPSECSA *sa_c = NULL, *sa_s = NULL;
+	// Validate arguments
+	if (ike == NULL || p == NULL || header == NULL || c == NULL || sa == NULL)
+	{
+		return;
+	}
+
+	if (c->V2ChildRekeyPendingMsgId == INFINITE || header->MessageId != c->V2ChildRekeyPendingMsgId)
+	{
+		return;
+	}
+
+	if (IkeV2RecvEncrypted(ike, sa, p, header) == false)
+	{
+		return;
+	}
+
+	sa->LastCommTick = ike->Now;
+
+	sa_payload = IkeGetPayload(header->PayloadList, IKEV2_PAYLOAD_SA, 0);
+	nonce_payload = IkeGetPayload(header->PayloadList, IKEV2_PAYLOAD_NONCE, 0);
+
+	if (sa_payload == NULL || nonce_payload == NULL)
+	{
+		// Refused (notify) or malformed: drop the pending state, a later
+		// dynamic change or the client's own rekey will retry.
+		c->V2ChildRekeyPendingMsgId = INFINITE;
+		if (c->V2ChildRekeyNi != NULL)
+		{
+			FreeBuf(c->V2ChildRekeyNi);
+			c->V2ChildRekeyNi = NULL;
+		}
+		IPsecLog(ike, c, sa, NULL, "LI2_CHILD_REKEY_REFUSED");
+		return;
+	}
+
+	{
+		BUF *nr = nonce_payload->Payload.GeneralData.Data;
+
+		if (nr == NULL || nr->Size < 16 || nr->Size > 256 ||
+			c->V2ChildRekeyNi == NULL)
+		{
+			c->V2ChildRekeyPendingMsgId = INFINITE;
+			if (c->V2ChildRekeyNi != NULL)
+			{
+				FreeBuf(c->V2ChildRekeyNi);
+				c->V2ChildRekeyNi = NULL;
+			}
+			return;
+		}
+
+		if (IkeV2CreateChildSaPairEx2(ike, c, sa, sa_payload, &child_setting, &our_spi,
+			&sa_c, &sa_s, c->V2ChildRekeyNi, nr, c->V2ChildRekeyOurSpi) == false)
+		{
+			IPsecLog(ike, c, sa, NULL, "LI2_CHILD_REKEY_REFUSED");
+			c->V2ChildRekeyPendingMsgId = INFINITE;
+			FreeBuf(c->V2ChildRekeyNi);
+			c->V2ChildRekeyNi = NULL;
+			return;
+		}
+
+		c->CurrentIpSecSaRecv = sa_c;
+		c->CurrentIpSecSaSend = sa_s;
+
+		c->V2ChildRekeyPendingMsgId = INFINITE;
+		FreeBuf(c->V2ChildRekeyNi);
+		c->V2ChildRekeyNi = NULL;
+
+		IPsecLog(ike, c, sa, sa_c, "LI2_CHILD_SA_REKEYED", sa->InitiatorCookie, sa->ResponderCookie, our_spi, 0, 0);
+	}
+}
+
 // Send a plain (unencrypted) response that contains only an error notify.
 // Used to answer IKE_SA_INIT requests that cannot be processed.
 void IkeV2SendPlainNotifyResponse(IKE_SERVER *ike, IKE_CLIENT *c, IKE_PACKET *header,
@@ -3201,12 +3541,17 @@ static BUF *IkeV2BuildIdrBody(IKE_SERVER *ike, IKE_CLIENT *c, UCHAR *idr_type)
 	return idr_body;
 }
 
-// Create both directions of the first Child SA. On success the SAs are
-// inserted into the server lists and paired.
 static bool IkeV2CreateChildSaPairEx(IKE_SERVER *ike, IKE_CLIENT *c, IKE_SA *sa,
 									 IKE_PACKET_PAYLOAD *sa_payload, IPSEC_SA_TRANSFORM_SETTING *child_setting,
 									 UINT *our_spi, IPSECSA **sa_c_out, IPSECSA **sa_s_out,
-									 BUF *initiator_rand, BUF *responder_rand)
+									 BUF *initiator_rand, BUF *responder_rand);
+
+// Create both directions of the first Child SA. On success the SAs are
+// inserted into the server lists and paired.
+static bool IkeV2CreateChildSaPairEx2(IKE_SERVER *ike, IKE_CLIENT *c, IKE_SA *sa,
+									 IKE_PACKET_PAYLOAD *sa_payload, IPSEC_SA_TRANSFORM_SETTING *child_setting,
+									 UINT *our_spi, IPSECSA **sa_c_out, IPSECSA **sa_s_out,
+									 BUF *initiator_rand, BUF *responder_rand, UINT forced_spi)
 {
 	UINT client_spi = 0;
 	UCHAR zero_iv[IKE_MAX_BLOCK_SIZE];
@@ -3236,7 +3581,14 @@ static bool IkeV2CreateChildSaPairEx(IKE_SERVER *ike, IKE_CLIENT *c, IKE_SA *sa,
 		child_setting->CapsuleMode = sa->V2NatDetected ? IKE_P2_CAPSULE_NAT_TUNNEL_1 : IKE_P2_CAPSULE_TUNNEL;
 	}
 
-	*our_spi = GenerateNewIPsecSaSpi(ike, client_spi);
+	if (forced_spi != 0)
+	{
+		*our_spi = forced_spi;
+	}
+	else
+	{
+		*our_spi = GenerateNewIPsecSaSpi(ike, client_spi);
+	}
 
 	// Child SA key material: prf+ (SK_d, Ni | Nr).
 	// Layout: all the initiator keys first, then all the responder keys,
@@ -3444,6 +3796,7 @@ typedef struct IKEV2_DYN_SET
 	char HubName[MAX_HUBNAME_LEN + 1];
 	LIST *Ranges;				// IKEV2_DYN_RANGE*
 	LOCK *Lock;
+	UINT64 Seq;					// Bumped on every successful add (rekey trigger)
 } IKEV2_DYN_SET;
 
 static LIST *g_ikev2_dyn_sets = NULL;
@@ -3546,7 +3899,8 @@ bool IkeV2DynAddRange(char *hubname, UINT start, UINT end)
 				IKEV2_DYN_RANGE *r = ZeroMalloc(sizeof(IKEV2_DYN_RANGE));
 				r->Start = start;
 				r->End = end;
-				Insert(s->Ranges, r);	// keep sorted by start via comparator-less insert; order irrelevant for consumers
+				Add(s->Ranges, r);
+				s->Seq++;
 				added = true;
 			}
 		}
@@ -3837,6 +4191,144 @@ void IkeV2DnsFeed(char *hubname, char *qname, IP *ip)
 		}
 	}
 	Unlock(g_ikev2_dyn_caches_lock);
+}
+
+
+// Monotonic change counter of a hub's dynamic set (0 when absent).
+UINT64 IkeV2DynGetSeq(char *hubname)
+{
+	IKEV2_DYN_SET *s;
+	UINT64 seq = 0;
+	// Validate arguments
+	if (hubname == NULL)
+	{
+		return 0;
+	}
+	IkeV2InitDynamic();
+	s = IkeV2DynGetSet(hubname, false);
+	if (s != NULL)
+	{
+		Lock(s->Lock);
+		{
+			seq = s->Seq;
+		}
+		Unlock(s->Lock);
+	}
+	return seq;
+}
+
+// Snapshot the dynamic ranges as IKEV2_TS entries (caller frees the list
+// and the entries).
+static LIST *IkeV2DynSnapshotTs(char *hubname)
+{
+	IKEV2_DYN_SET *s;
+	LIST *out;
+	UINT i;
+	// Validate arguments
+	if (hubname == NULL)
+	{
+		return NewListFast(NULL);
+	}
+	IkeV2InitDynamic();
+	out = NewListFast(NULL);
+	s = IkeV2DynGetSet(hubname, false);
+	if (s == NULL)
+	{
+		return out;
+	}
+	Lock(s->Lock);
+	{
+		for (i = 0; i < LIST_NUM(s->Ranges); i++)
+		{
+			IKEV2_DYN_RANGE *r = LIST_DATA(s->Ranges, i);
+			Add(out, IkeV2NewTsRange(r->Start, r->End));
+		}
+	}
+	Unlock(s->Lock);
+	return out;
+}
+
+// The tunnel selector set as of NOW for a hub: the static rule ranges
+// (file snapshot incl. the negotiation-time domain bootstrap) merged with
+// the dynamic set, capped. NULL = global (all traffic).
+LIST *IkeV2CurrentTunnelRanges(char *hubname)
+{
+	LIST *base, *dyn, *all;
+	UINT i;
+	LIST *merged;
+	IKEV2_TS *cur;
+	UINT curStart = 0, curEnd = 0;
+	bool have = false;
+
+	base = IkeV2LoadSplitRanges(hubname);
+	dyn = IkeV2DynSnapshotTs(hubname);
+
+	if (base == NULL && LIST_NUM(dyn) == 0)
+	{
+		ReleaseList(dyn);
+		return NULL;
+	}
+
+	all = NewList(IkeV2CompareTsRange);
+	if (base != NULL)
+	{
+		for (i = 0; i < LIST_NUM(base); i++)
+		{
+			Add(all, LIST_DATA(base, i));
+		}
+		ReleaseList(base);
+	}
+	for (i = 0; i < LIST_NUM(dyn); i++)
+	{
+		Add(all, LIST_DATA(dyn, i));
+	}
+	ReleaseList(dyn);
+
+	Sort(all);
+
+	merged = NewList(NULL);
+	for (i = 0; i < LIST_NUM(all); i++)
+	{
+		IKEV2_TS *ts = LIST_DATA(all, i);
+		UINT st = IPToUINT(&ts->StartAddress);
+		UINT en = IPToUINT(&ts->EndAddress);
+
+		if (have && st <= curEnd + 1)
+		{
+			if (en > curEnd)
+			{
+				curEnd = en;
+			}
+		}
+		else
+		{
+			if (have)
+			{
+				Add(merged, IkeV2NewTsRange(curStart, curEnd));
+			}
+			curStart = st;
+			curEnd = en;
+			have = true;
+		}
+	}
+	if (have)
+	{
+		Add(merged, IkeV2NewTsRange(curStart, curEnd));
+	}
+	ReleaseList(all);
+
+	while (LIST_NUM(merged) > IKEV2_SPLIT_MAX_RANGES)
+	{
+		Free(LIST_DATA(merged, LIST_NUM(merged) - 1));
+		Delete(merged, LIST_DATA(merged, LIST_NUM(merged) - 1));
+	}
+
+	if (LIST_NUM(merged) == 0)
+	{
+		ReleaseList(merged);
+		return NULL;
+	}
+	return merged;
 }
 
 // Query-side feed: matching names are resolved on a worker thread (the
@@ -4358,12 +4850,22 @@ static bool IkeV2AddChildSaResponsePayloads(IKE_SERVER *ike, LIST *payload_list,
 		tsi_payload, tsr_payload, NULL, NULL);
 }
 
+
+
+
+
 //// IKE_AUTH
+
 
 static bool IkeV2CreateChildSaPairEx(IKE_SERVER *ike, IKE_CLIENT *c, IKE_SA *sa,
 									 IKE_PACKET_PAYLOAD *sa_payload, IPSEC_SA_TRANSFORM_SETTING *child_setting,
 									 UINT *our_spi, IPSECSA **sa_c_out, IPSECSA **sa_s_out,
-									 BUF *initiator_rand, BUF *responder_rand);
+									 BUF *initiator_rand, BUF *responder_rand)
+{
+	return IkeV2CreateChildSaPairEx2(ike, c, sa, sa_payload, child_setting, our_spi, sa_c_out, sa_s_out,
+		initiator_rand, responder_rand, 0);
+}
+
 
 // Message ID gate shared by all IKEv2 request handlers.
 // Returns true when the request should be processed. A retransmission of
@@ -5935,13 +6437,38 @@ void IkeV2ProcCreateChildSa(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, I
 			if (LIST_NUM(tsi->TsList) >= 1 && LIST_NUM(tsr->TsList) >= 1)
 			{
 				IKEV2_TS *echo_i = ZeroMalloc(sizeof(IKEV2_TS));
-				IKEV2_TS *echo_r = ZeroMalloc(sizeof(IKEV2_TS));
+				LIST *tsr_list = NewListFast(NULL);
+				LIST *current = NULL;
 
 				Copy(echo_i, LIST_DATA(tsi->TsList, 0), sizeof(IKEV2_TS));
-				Copy(echo_r, LIST_DATA(tsr->TsList, 0), sizeof(IKEV2_TS));
+
+				// DNS-driven split: instead of echoing the peer's single
+				// selector, answer with the CURRENT tunnel set (static
+				// rules union the dynamic ranges gathered since connect).
+				// Responder-side narrowing is RFC 7296 section 2.9 legal.
+				if (c->V2Ipc != NULL)
+				{
+					current = IkeV2CurrentTunnelRanges(c->V2Ipc->HubName);
+				}
+
+				if (current != NULL)
+				{
+					UINT k;
+					for (k = 0; k < LIST_NUM(current); k++)
+					{
+						Add(tsr_list, LIST_DATA(current, k));
+					}
+					ReleaseList(current);
+				}
+				else
+				{
+					IKEV2_TS *echo_r = ZeroMalloc(sizeof(IKEV2_TS));
+					Copy(echo_r, LIST_DATA(tsr->TsList, 0), sizeof(IKEV2_TS));
+					Add(tsr_list, echo_r);
+				}
 
 				Add(payload_list, IkeV2NewTsPayload(IKEV2_PAYLOAD_TS_INITIATOR, NewListSingle(echo_i)));
-				Add(payload_list, IkeV2NewTsPayload(IKEV2_PAYLOAD_TS_RESPONDER, NewListSingle(echo_r)));
+				Add(payload_list, IkeV2NewTsPayload(IKEV2_PAYLOAD_TS_RESPONDER, tsr_list));
 			}
 			else
 			{

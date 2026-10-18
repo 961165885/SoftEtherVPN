@@ -219,6 +219,14 @@ struct IKE_CLIENT
 	// IKEv2 user plane
 	IPC_ASYNC *V2IpcAsync;						// Async IPC connection into the virtual hub (L3 + DHCP)
 	IPC *V2Ipc;									// The IPC object once ready (owned by V2IpcAsync)
+
+	// IKEv2 DNS-driven split rekey (server-initiated Child SA rekey that
+	// widens/narrows the traffic selectors as domain rules resolve)
+	UINT64 V2DynSeqSeen;						// Dynamic-range sequence already applied via rekey
+	UINT64 V2LastDynRekeyTick;					// Debounce floor for the next rekey
+	UINT V2ChildRekeyPendingMsgId;				// MessageId of our outstanding rekey request (INFINITE = none)
+	BUF *V2ChildRekeyNi;						// Our Ni while a rekey request is outstanding
+	UINT V2ChildRekeyOurSpi;					// The SPI we proposed in the outstanding SAi2
 };
 
 // IKE SA

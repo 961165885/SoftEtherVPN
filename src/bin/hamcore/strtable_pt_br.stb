@@ -7146,3 +7146,6 @@ LI2_IPC_CONNECTED	A sessão IPC do IKEv2 para o hub virtual foi estabelecida. IP
 LI2_IPC_FAILED	Não foi possível estabelecer a sessão IPC do IKEv2 para o hub virtual. Nome de Usuário: %S
 LI2_IPC_DISCONNECTED	A sessão IPC do IKEv2 deste cliente foi desconectada.
 LI2_SPLIT_APPLIED	Seletores de tráfego de split tunneling IKEv2 aplicados (modo: %S, %u intervalos)
+LI2_CHILD_REKEY_STARTED	IKEv2 split rekey started (dynamic ranges moved). MessageId: %u, new SPI: %u
+LI2_CHILD_SA_REKEYED	IKEv2 Child SA rekeyed. Initiator Cookie: 0x%I64X, Responder Cookie: 0x%I64X, New SPI: %u
+LI2_CHILD_REKEY_REFUSED	IKEv2 split rekey was refused or failed; will retry on the next change.

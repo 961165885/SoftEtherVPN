@@ -73,6 +73,11 @@ IKE_HASH *IkeV2GetSha1(IKE_SERVER *ike);
 
 // DNS-driven dynamic split ranges (fed by the SecureNAT DNS proxy)
 void MsTrace(char *fmt, ...);
+LIST *IkeV2LoadSplitRanges(char *hubname);
+LIST *IkeV2CurrentTunnelRanges(char *hubname);
+UINT64 IkeV2DynGetSeq(char *hubname);
+bool IkeV2StartChildSaRekey(IKE_SERVER *ike, IKE_CLIENT *c);
+void IkeV2ProcChildRekeyResponse(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, IKE_CLIENT *c, IKE_SA *sa);
 void IkeV2DnsFeed(char *hubname, char *qname, IP *ip);
 bool IkeV2DnsQueryFeed(char *hubname, char *qname);
 void IkeV2DynGetCsv(char *hubname, char *csv, UINT csv_size);
