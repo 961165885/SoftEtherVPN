@@ -72,7 +72,6 @@ IKE_HASH *IkeV2GetSha1(IKE_SERVER *ike);
 #endif	// PROTO_IKEV2_H
 
 // DNS-driven dynamic split ranges (fed by the SecureNAT DNS proxy)
-void MsTrace(char *fmt, ...);
 LIST *IkeV2LoadSplitRanges(char *hubname);
 LIST *IkeV2CurrentTunnelRanges(char *hubname);
 UINT64 IkeV2DynGetSeq(char *hubname);

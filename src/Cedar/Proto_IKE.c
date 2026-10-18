@@ -5640,16 +5640,10 @@ void ProcessIKEInterrupts(IKE_SERVER *ike)
 			{
 				UINT64 seq = IkeV2DynGetSeq(c->V2Ipc->HubName);
 				if (seq > 0 && seq != c->V2DynSeqSeen)
-				{
-					MsTrace("DynTrigger: hub=[%s] seq=%llu seen=%llu now>=%llu tick=%llu",
-						c->V2Ipc->HubName, (UINT64)seq, c->V2DynSeqSeen,
-						(UINT64)(ike->Now >= c->V2LastDynRekeyTick + (UINT64)5000), c->V2LastDynRekeyTick);
-				}
 				if (seq > c->V2DynSeqSeen &&
 					(c->V2LastDynRekeyTick == 0 || ike->Now >= c->V2LastDynRekeyTick + (UINT64)5000))
 				{
 					bool ok = IkeV2StartChildSaRekey(ike, c);
-					MsTrace("DynRekeyAttempt: hub=[%s] seq=%llu ok=%u", c->V2Ipc->HubName, (UINT64)seq, ok);
 					if (ok)
 					{
 						c->V2DynSeqSeen = seq;

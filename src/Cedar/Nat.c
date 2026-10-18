@@ -1720,7 +1720,6 @@ NAT *NiNewNatEx(SNAT *snat, VH_OPTION *o)
 	// Keep the caller's option on the NAT object itself: the DNS-driven
 	// split hook reads nat->Option.HubName from the packet path.
 	Copy(&n->Option, o, sizeof(VH_OPTION));
-	MsTrace("NiNewNatEx n=%p opt=[%s]", n, n->Option.HubName);
 
 #if	0
 	// Start the operation of the virtual host

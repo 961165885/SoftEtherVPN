@@ -6970,8 +6970,6 @@ void DnsProxy(VH *v, UINT src_ip, UINT src_port, UINT dest_ip, UINT dest_port, v
 			Zero(&p, sizeof(p));
 			if (ParseDnsPacketEx(v, src_ip, src_port, dest_ip, dest_port, data, size, &p))
 			{
-				MsTrace("DnsProxy hook: v=%p nat=%p name=[%s]",
-					v, v->nat, v->nat != NULL ? v->nat->Option.HubName : "-");
 				IkeV2DnsQueryFeed((v->nat != NULL ? v->nat->Option.HubName : NULL), p.Hostname);
 			}
 		}

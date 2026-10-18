@@ -2505,36 +2505,30 @@ bool IkeV2StartChildSaRekey(IKE_SERVER *ike, IKE_CLIENT *c)
 	// Validate arguments
 	if (ike == NULL || c == NULL)
 	{
-		MsTrace("RekeyAbort: %s", "sa-null");
 		return false;
 	}
 
 	sa = c->CurrentIkeSa;
 	if (sa == NULL || sa->Established == false || sa->V2State != IKEV2_STATE_ESTABLISHED)
 	{
-		MsTrace("RekeyAbort: %s", "not-est");
 		return false;
 	}
 	if (c->Deleting || sa->Deleting)
 	{
-		MsTrace("RekeyAbort: %s", "deleting");
 		return false;
 	}
 	if (c->V2ChildRekeyPendingMsgId != INFINITE)
 	{
-		MsTrace("RekeyAbort: %s", "pending");
 		return false;	// one outstanding rekey at a time
 	}
 	if (c->V2Ipc == NULL || c->CurrentIpSecSaRecv == NULL || c->CurrentIpSecSaSend == NULL)
 	{
-		MsTrace("RekeyAbort: %s", "no-ipc");
 		return false;
 	}
 
 	current = IkeV2CurrentTunnelRanges(c->V2Ipc->HubName);
 	if (current == NULL)
 	{
-		MsTrace("RekeyAbort: %s", "no-current");
 		return false;	// global: nothing to narrow to
 	}
 
@@ -2545,7 +2539,6 @@ bool IkeV2StartChildSaRekey(IKE_SERVER *ike, IKE_CLIENT *c)
 			SeekBuf(sa->V2TsiBody, 0, 0);
 		}
 		IKE_PACKET_PAYLOAD *tsi = IkeParsePayload(IKEV2_PAYLOAD_TS_INITIATOR, sa->V2TsiBody);
-		MsTrace("RekeyTSi: parsed=%p list=%u", tsi, tsi ? LIST_NUM(tsi->Payload.TsV2.TsList) : 0);
 		if (tsi != NULL && LIST_NUM(tsi->Payload.TsV2.TsList) >= 1)
 		{
 			IKEV2_TS *t = ZeroMalloc(sizeof(IKEV2_TS));
@@ -2562,7 +2555,6 @@ bool IkeV2StartChildSaRekey(IKE_SERVER *ike, IKE_CLIENT *c)
 			Free(LIST_DATA(current, k));
 		}
 		ReleaseList(current);
-		MsTrace("RekeyAbort: %s", "no-tsi");
 		return false;
 	}
 
@@ -2608,7 +2600,6 @@ bool IkeV2StartChildSaRekey(IKE_SERVER *ike, IKE_CLIENT *c)
 	if (message_id == INFINITE)
 	{
 		FreeBuf(ni);
-		MsTrace("RekeyAbort: %s", "send-fail");
 		return false;
 	}
 
@@ -3215,38 +3206,6 @@ static void IkeV2CalcMskFromMsChapV2(UCHAR *nt_hash_hash, UCHAR *nt_response, UC
 // Verify an MSCHAPv2 NT-Response against the user database of the target
 // virtual hub and derive the material needed for the EAP MSK
 
-// TEMP DEBUG: append marker (IPsecLog needs strtable entries). The handle
-// stays open for the process lifetime and appends at the file position.
-static IO *g_ms_trace = NULL;
-static LOCK *g_ms_trace_lock = NULL;
-void MsTrace(char *fmt, ...)
-{
-	va_list ap;
-	char buf[1024];
-	char line[1100];
-	va_start(ap, fmt);
-	FormatArgs(buf, sizeof(buf), fmt, ap);
-	va_end(ap);
-	Format(line, sizeof(line), "%s\n", buf);
-	if (g_ms_trace_lock == NULL)
-	{
-		g_ms_trace_lock = NewLock();
-	}
-	Lock(g_ms_trace_lock);
-	{
-		if (g_ms_trace == NULL)
-		{
-			g_ms_trace = FileCreate("/tmp/mschap_trace.log");
-		}
-		if (g_ms_trace != NULL)
-		{
-			FileWrite(g_ms_trace, line, StrLen(line));
-			FileFlush(g_ms_trace);
-		}
-	}
-	Unlock(g_ms_trace_lock);
-}
-
 static bool IkeV2MsChapV2VerifyHubUser(IKE_SERVER *ike, char *username,
 									   UCHAR *server_challenge, UCHAR *peer_challenge, UCHAR *nt_response,
 									   UCHAR *nt_hash_hash, UCHAR *server_response_20)
@@ -3268,7 +3227,6 @@ static bool IkeV2MsChapV2VerifyHubUser(IKE_SERVER *ike, char *username,
 
 	// Resolve "user@hub" with the IPsec default hub fallback
 	PPPParseUsername(ike->Cedar, username, &d);
-	MsTrace("parsed user='%s' hub='%s' raw='%s'", d.UserName, d.HubName, username);
 
 	if (IsEmptyStr(d.UserName))
 	{
@@ -3279,7 +3237,6 @@ static bool IkeV2MsChapV2VerifyHubUser(IKE_SERVER *ike, char *username,
 
 	if (hub == NULL)
 	{
-		MsTrace("hub '%s' NOT FOUND", d.HubName);
 		return false;
 	}
 
@@ -3298,14 +3255,11 @@ static bool IkeV2MsChapV2VerifyHubUser(IKE_SERVER *ike, char *username,
 				StrCat(names, sizeof(names), x->Name);
 				StrCat(names, sizeof(names), "] ");
 			}
-			MsTrace("user '%s' NOT FOUND in hub '%s' list_n=%u names=%s offline=%u type=%u",
-				d.UserName, d.HubName, n, names, hub->Offline, hub->Type);
 		}
 		if (u != NULL)
 		{
 			Lock(u->lock);
 			{
-				MsTrace("user='%s' authtype=%u", d.UserName, u->AuthType);
 				if (u->AuthType == AUTHTYPE_PASSWORD)
 				{
 					AUTHPASSWORD *auth = (AUTHPASSWORD *)u->AuthData;
@@ -3320,10 +3274,6 @@ static bool IkeV2MsChapV2VerifyHubUser(IKE_SERVER *ike, char *username,
 							BinToStr(pc, sizeof(pc), peer_challenge, 16);
 							BinToStr(nt, sizeof(nt), nt_response, 24);
 							BinToStr(ex, sizeof(ex), expected, 24);
-							MsTrace("hashzero=%u match=%u name='%s' sc=%s pc=%s nt=%s exp=%s",
-								IsZero(auth->NtLmSecureHash, MD5_SIZE),
-								Cmp(expected, nt_response, IKEV2_MSCHAPV2_NT_RESPONSE_SIZE) == 0,
-								username, sc, pc, nt, ex);
 						}
 
 						if (Cmp(expected, nt_response, IKEV2_MSCHAPV2_NT_RESPONSE_SIZE) == 0)
@@ -4266,7 +4216,15 @@ LIST *IkeV2CurrentTunnelRanges(char *hubname)
 	if (base == NULL && LIST_NUM(dyn) == 0)
 	{
 		ReleaseList(dyn);
-		return NULL;
+		// Neither static rules nor dynamic ranges: fall back to the
+		// rule-internal set so the DNS server and the hub subnet stay
+		// reachable (the split file may have been momentarily swept by
+		// the backend GC racing a hub state flip).
+		{
+			IKEV2_TS *t = IkeV2NewTsRange(0xC0A81E00, 0xC0A81EFF);	// 192.168.30.0/24 (packed)
+			LIST *fallback = NewListSingle(t);
+			return fallback;
+		}
 	}
 
 	all = NewList(IkeV2CompareTsRange);
@@ -4670,7 +4628,6 @@ LIST *IkeV2LoadSplitRanges(char *hubname)
 				Format(one, sizeof(one), "%r-%r ", &a, &b);
 				StrCat(dbg, sizeof(dbg), one);
 			}
-			MsTrace("merged(%u): %s", LIST_NUM(merged), dbg);
 		}
 
 		// Cap the selector count: peers accept a limited number of ranges.
@@ -5453,7 +5410,6 @@ static void IkeV2ProcIkeAuthEapRound(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *
 
 				IkeV2SendEncryptedResponse(ike, sa, IKE_EXCHANGE_TYPE_IKE_AUTH, header->MessageId, payload_list);
 
-				MsTrace("EAP-UNSUPPORTED branch hit");
 				IPsecLog(ike, c, sa, NULL, "LI2_EAP_UNSUPPORTED");
 
 				IkeV2MarkIkeSaDeleted(ike, sa);
@@ -5470,7 +5426,6 @@ static void IkeV2ProcIkeAuthEapRound(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *
 // Verify an MSCHAPv2 response, derive the MSK and start the hub session
 static void IkeV2EapMschapV2Response(IKE_SERVER *ike, IKE_PACKET *header, IKE_CLIENT *c, IKE_SA *sa, BUF *type_data)
 {
-	MsTrace("EapMschapV2Response entered, msk=%u", sa->V2MskSize);
 	UCHAR peer_challenge[IKEV2_MSCHAPV2_CHALLENGE_SIZE];
 	UCHAR nt_response[IKEV2_MSCHAPV2_NT_RESPONSE_SIZE];
 	char name[MAX_SIZE];

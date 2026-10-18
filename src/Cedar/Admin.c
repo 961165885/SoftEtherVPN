@@ -1526,7 +1526,6 @@ UINT StEnumDynamicRanges(ADMIN *a, RPC_ENUM_DYNAMIC *t)
 {
 	HUB *h;
 	UINT i;
-	MsTrace("StEnumDynamicRanges hub=[%s] serveradmin=%u", t->HubName, a->ServerAdmin);
 		// Validate arguments
 	if (t == NULL)
 	{
