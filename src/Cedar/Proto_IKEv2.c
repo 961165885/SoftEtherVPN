@@ -3763,14 +3763,33 @@ typedef struct IKEV2_DYN_HUB_CACHE
 static LIST *g_ikev2_dyn_caches = NULL;
 static LOCK *g_ikev2_dyn_caches_lock = NULL;
 
+static LOCK *g_ikev2_dyn_init_lock = NULL;
+
 void IkeV2InitDynamic()
 {
-	if (g_ikev2_dyn_sets_lock == NULL)
+	// Thread-safe one-shot init: two DNS-proxy threads can race here on
+	// the first query, and the unsynchronized NULL check let each thread
+	// create its own LIST/LOCK - the loser's lock silently replaced the
+	// winner's, leaving the other thread mutating a list guarded by a
+	// lock nobody else holds (the root cause of the IKEv2 DynClear crash
+	// loop: 344 segfaults in 12 days).
+	if (g_ikev2_dyn_init_lock == NULL)
 	{
-		g_ikev2_dyn_sets = NewList(NULL);
-		g_ikev2_dyn_sets_lock = NewLock();
-		g_ikev2_dyn_caches = NewList(NULL);
-		g_ikev2_dyn_caches_lock = NewLock();
+		LOCK *my_lock = NewLock();
+		Lock(my_lock);
+		if (g_ikev2_dyn_init_lock == NULL)
+		{
+			g_ikev2_dyn_init_lock = my_lock;
+			g_ikev2_dyn_sets = NewList(NULL);
+			g_ikev2_dyn_sets_lock = NewLock();
+			g_ikev2_dyn_caches = NewList(NULL);
+			g_ikev2_dyn_caches_lock = NewLock();
+		}
+		else
+		{
+			DeleteLock(my_lock);
+		}
+		Unlock(my_lock);
 	}
 }
 
@@ -3862,7 +3881,7 @@ bool IkeV2DynAddRange(char *hubname, UINT start, UINT end)
 // Remove all dynamic ranges of a hub (rule file gone / hub released).
 void IkeV2DynClear(char *hubname)
 {
-	IKEV2_DYN_SET *s;
+	IKEV2_DYN_SET *s = NULL;
 	UINT i;
 	// Validate arguments
 	if (hubname == NULL)
@@ -3870,29 +3889,33 @@ void IkeV2DynClear(char *hubname)
 		return;
 	}
 	IkeV2InitDynamic();
+	// Detach and free the set atomically under the lock: the old code
+	// used `s` after unlocking, and `s` was left pointing at the LAST
+	// list element even when no hub matched (freeing an unrelated set).
 	Lock(g_ikev2_dyn_sets_lock);
 	{
 		for (i = 0; i < LIST_NUM(g_ikev2_dyn_sets); i++)
 		{
-			s = LIST_DATA(g_ikev2_dyn_sets, i);
-			if (StrCmpi(s->HubName, hubname) == 0)
+			IKEV2_DYN_SET *t = LIST_DATA(g_ikev2_dyn_sets, i);
+			if (StrCmpi(t->HubName, hubname) == 0)
 			{
-				Delete(g_ikev2_dyn_sets, s);
+				Delete(g_ikev2_dyn_sets, t);
+				s = t;
 				break;
 			}
 		}
+		if (s != NULL)
+		{
+			for (i = 0; i < LIST_NUM(s->Ranges); i++)
+			{
+				Free(LIST_DATA(s->Ranges, i));
+			}
+			ReleaseList(s->Ranges);
+			DeleteLock(s->Lock);
+			Free(s);
+		}
 	}
 	Unlock(g_ikev2_dyn_sets_lock);
-	if (s != NULL)
-	{
-		for (i = 0; i < LIST_NUM(s->Ranges); i++)
-		{
-			Free(LIST_DATA(s->Ranges, i));
-		}
-		ReleaseList(s->Ranges);
-		DeleteLock(s->Lock);
-		Free(s);
-	}
 	// drop the rule cache too
 	Lock(g_ikev2_dyn_caches_lock);
 	{
