@@ -1434,7 +1434,81 @@ void JsonRpcProcPost(CONNECTION *c, SOCK *s, HTTP_HEADER *h, UINT post_data_size
 	Free(a);
 }
 
-// Dispatch routine for Administration RPC 
+// Dynamic split ranges of a hub (DNS-driven narrowing observability and
+// the WireGuard update channel).
+typedef struct RPC_ENUM_DYNAMIC
+{
+	char HubName[MAX_HUBNAME_LEN + 1];
+	char IpsCsv[5120];			// comma-separated dotted quads / ranges
+	UINT NumRanges;
+} RPC_ENUM_DYNAMIC;
+
+void InRpcEnumDynamic(RPC_ENUM_DYNAMIC *t, PACK *p)
+{
+	// Validate arguments
+	if (t == NULL || p == NULL)
+	{
+		return;
+	}
+	Zero(t, sizeof(RPC_ENUM_DYNAMIC));
+	PackGetStr(p, "HubName", t->HubName, sizeof(t->HubName));
+}
+void OutRpcEnumDynamic(PACK *p, RPC_ENUM_DYNAMIC *t)
+{
+	// Validate arguments
+	if (t == NULL || p == NULL)
+	{
+		return;
+	}
+	PackAddStr(p, "HubName", t->HubName);
+	PackAddStr(p, "IpsCsv", t->IpsCsv);
+	PackAddInt(p, "NumRanges", t->NumRanges);
+}
+UINT StEnumDynamicRanges(ADMIN *a, RPC_ENUM_DYNAMIC *t)
+{
+	HUB *h;
+	UINT i;
+	// Validate arguments
+	if (t == NULL)
+	{
+		return ERR_INTERNAL_ERROR;
+	}
+	if (a->ServerAdmin == false)
+	{
+		return ERR_NOT_ENOUGH_RIGHT;
+	}
+	if (IsEmptyStr(t->HubName) || IsSafeStr(t->HubName) == false)
+	{
+		return ERR_INVALID_PARAMETER;
+	}
+	LockHubList(a->Server->Cedar);
+	{
+		h = GetHub(a->Server->Cedar, t->HubName);
+	}
+	UnlockHubList(a->Server->Cedar);
+	if (h == NULL)
+	{
+		return ERR_HUB_NOT_FOUND;
+	}
+	ReleaseHub(h);
+
+	IkeV2DynGetCsv(t->HubName, t->IpsCsv, sizeof(t->IpsCsv));
+	t->NumRanges = 0;
+	for (i = 0; t->IpsCsv[i] != 0; i++)
+	{
+		if (t->IpsCsv[i] == ',')
+		{
+			t->NumRanges++;
+		}
+	}
+	if (t->IpsCsv[0] != 0)
+	{
+		t->NumRanges++;
+	}
+	return ERR_NO_ERROR;
+}
+
+// Dispatch routine for Administration RPC
 PACK *AdminDispatch(RPC *rpc, char *name, PACK *p)
 {
 	ADMIN *a;
@@ -1491,80 +1565,6 @@ PACK *AdminDispatch(RPC *rpc, char *name, PACK *p)
 	}
 
 
-
-// Dynamic split ranges of a hub (DNS-driven narrowing observability and
-// the WireGuard update channel).
-typedef struct RPC_ENUM_DYNAMIC
-{
-	char HubName[MAX_HUBNAME_LEN + 1];
-	char IpsCsv[5120];			// comma-separated dotted quads / ranges
-	UINT NumRanges;
-} RPC_ENUM_DYNAMIC;
-
-void InRpcEnumDynamic(RPC_ENUM_DYNAMIC *t, PACK *p)
-{
-	// Validate arguments
-	if (t == NULL || p == NULL)
-	{
-		return;
-	}
-	Zero(t, sizeof(RPC_ENUM_DYNAMIC));
-	PackGetStr(p, "HubName", t->HubName, sizeof(t->HubName));
-}
-void OutRpcEnumDynamic(PACK *p, RPC_ENUM_DYNAMIC *t)
-{
-	// Validate arguments
-	if (t == NULL || p == NULL)
-	{
-		return;
-	}
-	PackAddStr(p, "HubName", t->HubName);
-	PackAddStr(p, "IpsCsv", t->IpsCsv);
-	PackAddInt(p, "NumRanges", t->NumRanges);
-}
-UINT StEnumDynamicRanges(ADMIN *a, RPC_ENUM_DYNAMIC *t)
-{
-	HUB *h;
-	UINT i;
-		// Validate arguments
-	if (t == NULL)
-	{
-		return ERR_INTERNAL_ERROR;
-	}
-	if (a->ServerAdmin == false)
-	{
-		return ERR_NOT_ENOUGH_RIGHT;
-	}
-	if (IsEmptyStr(t->HubName) || IsSafeStr(t->HubName) == false)
-	{
-		return ERR_INVALID_PARAMETER;
-	}
-	LockHubList(a->Server->Cedar);
-	{
-		h = GetHub(a->Server->Cedar, t->HubName);
-	}
-	UnlockHubList(a->Server->Cedar);
-	if (h == NULL)
-	{
-		return ERR_HUB_NOT_FOUND;
-	}
-	ReleaseHub(h);
-
-	IkeV2DynGetCsv(t->HubName, t->IpsCsv, sizeof(t->IpsCsv));
-	t->NumRanges = 0;
-	for (i = 0; t->IpsCsv[i] != 0; i++)
-	{
-		if (t->IpsCsv[i] == ',')
-		{
-			t->NumRanges++;
-		}
-	}
-	if (t->IpsCsv[0] != 0)
-	{
-		t->NumRanges++;
-	}
-	return ERR_NO_ERROR;
-}
 
 	if (0) {}
 

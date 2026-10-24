@@ -3643,6 +3643,11 @@ static bool IkeV2CreateChildSaPair(IKE_SERVER *ike, IKE_CLIENT *c, IKE_SA *sa,
 #define IKEV2_SPLIT_MAX_RANGES		64
 
 // Parses "a.b.c.d" or "a.b.c.d/nn" into an IPv4 start/end range.
+// The output values are in NETWORK byte order (first octet in the high
+// byte): every numeric range operation in the split engine (sorting,
+// merging, complementing, widening) runs in that order, and
+// IkeV2NewTsRange converts at the single point where the values meet
+// the IP-struct world.
 bool IkeV2ParseCidrToRange(char *s, UINT *start, UINT *end)
 {
 	UINT ip = 0, mask = 32, i;
@@ -3675,7 +3680,7 @@ bool IkeV2ParseCidrToRange(char *s, UINT *start, UINT *end)
 	{
 		return false;
 	}
-	ip = StrToIP32(tmp);
+	ip = Endian32(StrToIP32(tmp));
 
 	// Shifts by 32/0 bits are undefined in C (x86 silently masks the
 	// count to 5 bits, which turned every /32 rule's end into
@@ -3699,7 +3704,8 @@ bool IkeV2ParseCidrToRange(char *s, UINT *start, UINT *end)
 	return true;
 }
 
-// Builds an IKEV2_TS range from two IPv4 values in host order.
+// Builds an IKEV2_TS range from two IPv4 values in NETWORK byte order
+// (the convention of the split engine - see IkeV2ParseCidrToRange).
 IKEV2_TS *IkeV2NewTsRange(UINT start, UINT end)
 {
 	IKEV2_TS *ts = ZeroMalloc(sizeof(IKEV2_TS));
@@ -3707,9 +3713,19 @@ IKEV2_TS *IkeV2NewTsRange(UINT start, UINT end)
 	ts->IpProtocol = 0;
 	ts->StartPort = 0;
 	ts->EndPort = 65535;
-	UINTToIP(&ts->StartAddress, start);
-	UINTToIP(&ts->EndAddress, end);
+	UINTToIP(&ts->StartAddress, Endian32(start));
+	UINTToIP(&ts->EndAddress, Endian32(end));
 	return ts;
+}
+
+// The numeric value of a TS endpoint in the engine's network byte order.
+UINT IkeV2TsNetValue(IKEV2_TS *ts, bool is_start)
+{
+	if (ts == NULL)
+	{
+		return 0;
+	}
+	return Endian32(IPToUINT(is_start ? &ts->StartAddress : &ts->EndAddress));
 }
 
 // Compares two ranges for sorting by start address.
@@ -3719,7 +3735,7 @@ int IkeV2CompareTsRange(void *p1, void *p2)
 	// themselves - dereference twice like every other SoftEther comparator.
 	IKEV2_TS *a = *(IKEV2_TS **)p1;
 	IKEV2_TS *b = *(IKEV2_TS **)p2;
-	UINT as = IPToUINT(&a->StartAddress), bs = IPToUINT(&b->StartAddress);
+	UINT as = IkeV2TsNetValue(a, true), bs = IkeV2TsNetValue(b, true);
 	if (as != bs) return (as < bs) ? -1 : 1;
 	return 0;
 }
@@ -4214,11 +4230,48 @@ static LIST *IkeV2DynSnapshotTs(char *hubname)
 		for (i = 0; i < LIST_NUM(s->Ranges); i++)
 		{
 			IKEV2_DYN_RANGE *r = LIST_DATA(s->Ranges, i);
-			Add(out, IkeV2NewTsRange(r->Start, r->End));
+			// The dynamic set stores SoftEther-packed UINTs (the CSV
+			// channel renders them directly); the engine works in
+			// network byte order.
+			Add(out, IkeV2NewTsRange(Endian32(r->Start), Endian32(r->End)));
 		}
 	}
 	Unlock(s->Lock);
 	return out;
+}
+
+// Rewrites single-host ranges (start == end) into two-address ranges.
+// RFC 7296 permits single-host traffic selectors, but Android's platform
+// IKEv2 client feeds every negotiated selector into IpRange, which throws
+// "start address must be before end address" for an empty/point range -
+// the exception kills the VPN session right after CHILD_SA setup
+// (IkeV2VpnRunner.onChildOpened -> onSessionLost). Widening by one
+// address keeps that client alive; the extra neighbour address routed
+// into the tunnel is harmless.
+void IkeV2SplitWidenSingleHost(LIST *ranges)
+{
+	UINT i;
+	if (ranges == NULL)
+	{
+		return;
+	}
+	for (i = 0; i < LIST_NUM(ranges); i++)
+	{
+		IKEV2_TS *ts = (IKEV2_TS *)LIST_DATA(ranges, i);
+		UINT s = IkeV2TsNetValue(ts, true);
+		UINT e = IkeV2TsNetValue(ts, false);
+		if (s == e)
+		{
+			if (e == 0xFFFFFFFF)
+			{
+				UINTToIP(&ts->StartAddress, Endian32(e - 1));
+			}
+			else
+			{
+				UINTToIP(&ts->EndAddress, Endian32(e + 1));
+			}
+		}
+	}
 }
 
 // The tunnel selector set as of NOW for a hub: the static rule ranges
@@ -4244,7 +4297,7 @@ LIST *IkeV2CurrentTunnelRanges(char *hubname)
 		// reachable (the split file may have been momentarily swept by
 		// the backend GC racing a hub state flip).
 		{
-			IKEV2_TS *t = IkeV2NewTsRange(0xC0A81E00, 0xC0A81EFF);	// 192.168.30.0/24 (packed)
+			IKEV2_TS *t = IkeV2NewTsRange(0xC0A81E00, 0xC0A81EFF);	// 192.168.30.0/24 (network order)
 			LIST *fallback = NewListSingle(t);
 			return fallback;
 		}
@@ -4267,12 +4320,16 @@ LIST *IkeV2CurrentTunnelRanges(char *hubname)
 
 	Sort(all);
 
+	// Widen before merging: dynamic DNS-fed ranges are /32s, and two
+	// adjacent widened singles then coalesce into one range here.
+	IkeV2SplitWidenSingleHost(all);
+
 	merged = NewList(NULL);
 	for (i = 0; i < LIST_NUM(all); i++)
 	{
 		IKEV2_TS *ts = LIST_DATA(all, i);
-		UINT st = IPToUINT(&ts->StartAddress);
-		UINT en = IPToUINT(&ts->EndAddress);
+		UINT st = IkeV2TsNetValue(ts, true);
+		UINT en = IkeV2TsNetValue(ts, false);
 
 		if (have && st <= curEnd + 1)
 		{
@@ -4324,7 +4381,7 @@ typedef struct IKEV2_DYN_REQ
 static LIST *g_ikev2_dyn_pending = NULL;
 static LOCK *g_ikev2_dyn_pending_lock = NULL;
 
-static UINT IkeV2DynResolveThread(THREAD *t, void *param)
+static void IkeV2DynResolveThread(THREAD *t, void *param)
 {
 	IKEV2_DYN_REQ *req = (IKEV2_DYN_REQ *)param;
 	LIST *v6 = NULL, *v4 = NULL;
@@ -4332,7 +4389,7 @@ static UINT IkeV2DynResolveThread(THREAD *t, void *param)
 	// Validate arguments
 	if (req == NULL)
 	{
-		return 0;
+		return;
 	}
 	if (DnsResolveEx(&v6, &v4, req->QName, 3000, NULL))
 	{
@@ -4355,7 +4412,6 @@ static UINT IkeV2DynResolveThread(THREAD *t, void *param)
 	}
 	Unlock(g_ikev2_dyn_pending_lock);
 	Free(req);
-	return 0;
 }
 
 // Returns true when the query name matched a domain rule and a resolution
@@ -4508,8 +4564,8 @@ LIST *IkeV2LoadSplitRanges(char *hubname)
 					IP *ip = (IP *)LIST_DATA(v4, j);
 					if (IsIP4(ip))
 					{
-						UINT a = IPToUINT(ip);
-						Add(raw, IkeV2NewTsRange(a, a));
+							UINT a = Endian32(IPToUINT(ip));
+							Add(raw, IkeV2NewTsRange(a, a));
 					}
 				}
 			}
@@ -4564,8 +4620,8 @@ LIST *IkeV2LoadSplitRanges(char *hubname)
 		for (i = 0; i < LIST_NUM(raw); i++)
 		{
 			IKEV2_TS *ts = (IKEV2_TS *)LIST_DATA(raw, i);
-			UINT s = IPToUINT(&ts->StartAddress);
-			UINT e = IPToUINT(&ts->EndAddress);
+			UINT s = IkeV2TsNetValue(ts, true);
+			UINT e = IkeV2TsNetValue(ts, false);
 
 			if (have && s <= curEnd + 1)
 			{
@@ -4605,8 +4661,8 @@ LIST *IkeV2LoadSplitRanges(char *hubname)
 			for (i = 0; i < LIST_NUM(merged); i++)
 			{
 				IKEV2_TS *ts = (IKEV2_TS *)LIST_DATA(merged, i);
-				UINT s = IPToUINT(&ts->StartAddress);
-				UINT e = IPToUINT(&ts->EndAddress);
+				UINT s = IkeV2TsNetValue(ts, true);
+				UINT e = IkeV2TsNetValue(ts, false);
 
 				if (s > prev)
 				{
@@ -4637,6 +4693,8 @@ LIST *IkeV2LoadSplitRanges(char *hubname)
 			ReleaseList(merged);
 			return NULL;
 		}
+
+		IkeV2SplitWidenSingleHost(merged);
 
 		{
 			UINT t;
@@ -4694,14 +4752,18 @@ void IkeV2SplitAddTunnelInternal(LIST *ranges, DHCP_OPTION_LIST *dhcp)
 	dns = dhcp->DnsServer;
 	server = dhcp->ServerAddress;
 
+	// DHCP option values are SoftEther-packed UINTs; the split engine
+	// works in network byte order (see IkeV2ParseCidrToRange).
 	if (dns != 0 && dns != 0xFFFFFFFF)
 	{
-		Add(ranges, IkeV2NewTsRange(dns, dns));
+		Add(ranges, IkeV2NewTsRange(Endian32(dns), Endian32(dns)));
 	}
 	if (server != 0 && server != 0xFFFFFFFF && server != dns)
 	{
-		Add(ranges, IkeV2NewTsRange(server, server));
+		Add(ranges, IkeV2NewTsRange(Endian32(server), Endian32(server)));
 	}
+
+	IkeV2SplitWidenSingleHost(ranges);
 
 	// No Sort() here: the list may carry a NULL comparator (built by
 	// merging), and range order is irrelevant to TS semantics.

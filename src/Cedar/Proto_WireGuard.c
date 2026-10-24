@@ -12,6 +12,9 @@
 
 #include <blake2.h>
 
+// Temporary data-path tracing: plain-text line in the server log.
+void WgsTrace(const WG_SERVER *server, const char *fmt, ...);
+
 
 const PROTO_IMPL *WgsGetProtoImpl()
 {
