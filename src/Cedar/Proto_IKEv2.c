@@ -6476,38 +6476,31 @@ void IkeV2ProcCreateChildSa(IKE_SERVER *ike, UDPPACKET *p, IKE_PACKET *header, I
 
 			if (LIST_NUM(tsi->TsList) >= 1 && LIST_NUM(tsr->TsList) >= 1)
 			{
-				IKEV2_TS *echo_i = ZeroMalloc(sizeof(IKEV2_TS));
+				UINT k;
+				LIST *tsi_list = NewListFast(NULL);
 				LIST *tsr_list = NewListFast(NULL);
-				LIST *current = NULL;
 
-				Copy(echo_i, LIST_DATA(tsi->TsList, 0), sizeof(IKEV2_TS));
-
-				// DNS-driven split: instead of echoing the peer's single
-				// selector, answer with the CURRENT tunnel set (static
-				// rules union the dynamic ranges gathered since connect).
-				// Responder-side narrowing is RFC 7296 section 2.9 legal.
-				if (c->V2Ipc != NULL)
+				// Rekey (this side = responder): echo the peer's selectors
+				// verbatim. RFC 7296 requires a rekeyed Child SA's traffic
+				// selectors to stay within the SA being rekeyed; answering
+				// with the CURRENT rule set instead can be a superset (rule
+				// file rewritten mid-session, dynamic ranges grown), which
+				// platform clients treat as a fatal error and tear down
+				// the session. Rule changes apply from the next connect.
+				for (k = 0; k < LIST_NUM(tsi->TsList); k++)
 				{
-					current = IkeV2CurrentTunnelRanges(c->V2Ipc->HubName);
+					IKEV2_TS *t = ZeroMalloc(sizeof(IKEV2_TS));
+					Copy(t, LIST_DATA(tsi->TsList, k), sizeof(IKEV2_TS));
+					Add(tsi_list, t);
+				}
+				for (k = 0; k < LIST_NUM(tsr->TsList); k++)
+				{
+					IKEV2_TS *t = ZeroMalloc(sizeof(IKEV2_TS));
+					Copy(t, LIST_DATA(tsr->TsList, k), sizeof(IKEV2_TS));
+					Add(tsr_list, t);
 				}
 
-				if (current != NULL)
-				{
-					UINT k;
-					for (k = 0; k < LIST_NUM(current); k++)
-					{
-						Add(tsr_list, LIST_DATA(current, k));
-					}
-					ReleaseList(current);
-				}
-				else
-				{
-					IKEV2_TS *echo_r = ZeroMalloc(sizeof(IKEV2_TS));
-					Copy(echo_r, LIST_DATA(tsr->TsList, 0), sizeof(IKEV2_TS));
-					Add(tsr_list, echo_r);
-				}
-
-				Add(payload_list, IkeV2NewTsPayload(IKEV2_PAYLOAD_TS_INITIATOR, NewListSingle(echo_i)));
+				Add(payload_list, IkeV2NewTsPayload(IKEV2_PAYLOAD_TS_INITIATOR, tsi_list));
 				Add(payload_list, IkeV2NewTsPayload(IKEV2_PAYLOAD_TS_RESPONDER, tsr_list));
 			}
 			else

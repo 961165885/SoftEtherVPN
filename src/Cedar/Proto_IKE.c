@@ -5631,37 +5631,15 @@ void ProcessIKEInterrupts(IKE_SERVER *ike)
 
 		if (c->V2Ipc != NULL)
 		{
-			// DNS-driven split: when the hub's dynamic range set moved
-			// (a domain rule resolved), refresh the Child SA traffic
-			// selectors via a server-initiated rekey. Debounced to one
-			// attempt per 5 seconds per client; a pending attempt or a
-			// 15s-old stuck one blocks further tries until cleared.
-			if (c->CurrentIkeSa != NULL && c->CurrentIkeSa->Established && c->Deleting == false)
-			{
-				UINT64 seq = IkeV2DynGetSeq(c->V2Ipc->HubName);
-				if (seq > 0 && seq != c->V2DynSeqSeen)
-				if (seq > c->V2DynSeqSeen &&
-					(c->V2LastDynRekeyTick == 0 || ike->Now >= c->V2LastDynRekeyTick + (UINT64)5000))
-				{
-					bool ok = IkeV2StartChildSaRekey(ike, c);
-					if (ok)
-					{
-						c->V2DynSeqSeen = seq;
-					}
-					c->V2LastDynRekeyTick = ike->Now;
-				}
-				if (c->V2ChildRekeyPendingMsgId != INFINITE &&
-					ike->Now >= c->V2LastDynRekeyTick + (UINT64)15000)
-				{
-					// Stuck rekey: give up so future changes can retry
-					c->V2ChildRekeyPendingMsgId = INFINITE;
-					if (c->V2ChildRekeyNi != NULL)
-					{
-						FreeBuf(c->V2ChildRekeyNi);
-						c->V2ChildRekeyNi = NULL;
-					}
-				}
-			}
+			// DNS-driven split via server-initiated Child SA rekey was
+			// removed: a rekey response whose traffic selectors are not a
+			// subset of the SA being rekeyed is a protocol violation that
+			// platform clients (Android Ikev2VpnRunner) answer by tearing
+			// down the whole session, and the dynamic set only ever GROWS
+			// (each DNS answer bumps the sequence), so every such rekey was
+			// a superset. Split selectors are fixed at IKE_AUTH (including
+			// the negotiation-time domain snapshot); live dynamic narrowing
+			// is WireGuard-only (client polls EnumDynamicRanges).
 
 			// IKEv2 user plane: pump the IPC virtual host and send the
 			// packets destined to the client through its outbound ESP SA
